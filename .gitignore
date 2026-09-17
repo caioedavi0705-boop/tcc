@@ -1,0 +1,24 @@
+# Dados locais do projeto
+data/
+
+# Ambientes virtuais
+.venv/
+venv/
+env/
+.env/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+*.egg
+
+# Jupyter
+.ipynb_checkpoints/
+*.nbconvert.ipynb
