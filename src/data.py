@@ -129,7 +129,7 @@ def drop_unused_sensor_columns(
     test: pd.DataFrame,
     columns_to_drop: list[str] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Remove sensores não utilizados na modelagem.
+    """Remove sensores não utilizados após a limpeza inicial.
 
     Args:
         train: DataFrame de treino com cabeçalho.
@@ -137,7 +137,7 @@ def drop_unused_sensor_columns(
         columns_to_drop: Colunas a remover; usa ``COLUMNS_TO_DROP`` se omitida.
 
     Returns:
-        Par ``(features_train, features_test)`` apenas com variáveis mantidas.
+        Par ``(train, test)`` com colunas redundantes removidas.
     """
     drop_cols = columns_to_drop or COLUMNS_TO_DROP
     return (
@@ -146,62 +146,22 @@ def drop_unused_sensor_columns(
     )
 
 
-def scale_sensor_features(
-    features_train: pd.DataFrame,
-    features_test: pd.DataFrame,
-    scaler: MinMaxScaler | None = None,
-    id_column: str = ID_COLUMN,
-    cycle_column: str = CYCLE_COLUMN,
-) -> tuple[pd.DataFrame, pd.DataFrame, MinMaxScaler]:
-    """Normaliza colunas de sensores com ``MinMaxScaler``.
-
-    Ajusta o scaler apenas no treino e aplica a mesma transformação no teste.
-    Colunas de identificação (ID e ciclo) não são escalonadas.
-
-    Args:
-        features_train: Features de treino.
-        features_test: Features de teste.
-        scaler: Scaler pré-ajustado; se ``None``, um novo scaler é criado e
-            ajustado no treino.
-        id_column: Nome da coluna de ID do motor.
-        cycle_column: Nome da coluna de número de ciclos.
-
-    Returns:
-        Tupla ``(train_scaled, test_scaled, scaler)`` com sensores no intervalo
-        [0, 1].
-    """
-    train_out = features_train.copy()
-    test_out = features_test.copy()
-    feature_cols = train_out.columns[2:].tolist()
-    fitted = scaler or MinMaxScaler()
-    if scaler is None:
-        train_out[feature_cols] = fitted.fit_transform(train_out[feature_cols])
-    else:
-        train_out[feature_cols] = fitted.transform(train_out[feature_cols])
-    test_out[feature_cols] = fitted.transform(test_out[feature_cols])
-    return train_out, test_out, fitted
-
-
 def compute_train_rul(
     train: pd.DataFrame,
     limit: int = DEFAULT_RUL_LIMIT,
     id_column: str = ID_COLUMN,
     cycle_column: str = CYCLE_COLUMN,
 ) -> list[int]:
-    """Calcula o RUL por linha do conjunto de treino com truncamento.
-
-    Para cada motor, o RUL é ``max_ciclos - ciclo_atual``, limitado a
-    ``limit`` quando ainda restam mais de ``limit`` ciclos até a falha.
+    """Calcula RUL por ciclo no treino (truncamento piecewise).
 
     Args:
-        train: DataFrame de treino com colunas de ID e ciclo.
-        limit: Valor máximo de RUL (piecewise linear, padrão NASA).
-        id_column: Nome da coluna de ID do motor.
-        cycle_column: Nome da coluna de número de ciclos.
+        train: DataFrame de treino com ID e número de ciclos.
+        limit: Teto de RUL (padrão 130 ciclos).
+        id_column: Coluna de identificação do motor.
+        cycle_column: Coluna de ciclo operacional.
 
     Returns:
-        Lista de RUL (inteiros), uma entrada por linha de ``train`` na ordem
-        original agrupada por motor.
+        Lista de RUL alinhada à ordem das linhas por motor.
     """
     max_cycles = train.groupby(id_column)[cycle_column].max().reset_index()
     rul_values: list[int] = []
@@ -212,7 +172,9 @@ def compute_train_rul(
             if cycle_index + 1 <= motor_max - limit:
                 rul_values.append(limit)
             else:
-                rul_values.append(int(motor_max - engine[cycle_column].iloc[cycle_index]))
+                rul_values.append(
+                    int(motor_max - engine[cycle_column].iloc[cycle_index])
+                )
     return [int(value) for value in rul_values]
 
 
@@ -224,21 +186,18 @@ def compute_test_rul(
     cycle_column: str = CYCLE_COLUMN,
     rul_column: str = RUL_COLUMN,
 ) -> list[int]:
-    """Calcula o RUL por linha do conjunto de teste.
-
-    Combina ciclos restantes observados com o RUL verdadeiro ao final do
-    teste (``rul_remaining``) e aplica o mesmo truncamento em ``limit``.
+    """Calcula RUL por ciclo no teste usando o RUL verdadeiro final.
 
     Args:
-        test: DataFrame de teste com colunas de ID e ciclo.
-        rul_remaining: RUL verdadeiro por motor ao fim da janela de teste.
-        limit: Valor máximo de RUL.
-        id_column: Nome da coluna de ID do motor.
-        cycle_column: Nome da coluna de número de ciclos.
-        rul_column: Nome da coluna de RUL em ``rul_remaining``.
+        test: DataFrame de teste com ID e ciclos.
+        rul_remaining: RUL ao fim da série de teste por motor.
+        limit: Teto de RUL.
+        id_column: Coluna de ID.
+        cycle_column: Coluna de ciclo.
+        rul_column: Coluna de RUL em ``rul_remaining``.
 
     Returns:
-        Lista de RUL (inteiros), uma entrada por linha de ``test``.
+        Lista de RUL alinhada às linhas de ``test``.
     """
     max_cycles = test.groupby(id_column)[cycle_column].max().reset_index()
     rul_values: list[int] = []
@@ -254,40 +213,6 @@ def compute_test_rul(
             else:
                 rul_values.append(int(value))
     return [int(value) for value in rul_values]
-
-
-def time_window(
-    data: pd.DataFrame,
-    rul: list[int],
-    window_size: int,
-    step: int,
-    id_column: str = ID_COLUMN,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Gera janelas temporais de sensores e o RUL alvo correspondente.
-
-    Args:
-        data: DataFrame com ID na primeira coluna e sensores a partir da
-            terceira coluna (índice 2).
-        rul: Lista de RUL alinhada à ordem das linhas em ``data`` (por motor).
-        window_size: Comprimento da janela em ciclos.
-        step: Passo entre janelas consecutivas do mesmo motor.
-        id_column: Nome da coluna de ID do motor.
-
-    Returns:
-        Tupla ``(x, y)`` com arrays ``x`` de forma
-        ``(n_amostras, window_size, n_sensores)`` e ``y`` unidimensional.
-    """
-    windows: list[np.ndarray] = []
-    targets: list[int] = []
-    offset = 0
-    for motor_id in data[id_column].unique():
-        engine = data[data[id_column] == motor_id]
-        for start in range(0, len(engine) - window_size + 1, step):
-            end = start + window_size
-            windows.append(engine.iloc[start:end, 2:].values)
-            targets.append(rul[offset + end - 1])
-        offset += len(engine)
-    return np.array(windows), np.array(targets)
 
 
 def prepare_fd001_windowed_data(
@@ -307,17 +232,26 @@ def prepare_fd001_windowed_data(
     Returns:
         Tupla ``(x_train, y_train, x_test, y_test, scaler)``.
     """
+    from src.features import create_fd001_windowed_features
+
     raw = load_fd001_raw(data_dir)
     train, test = drop_missing_rows(raw.train, raw.test)
     train, test, rul_df = assign_fd001_column_names(train, test, raw.rul)
-    features_train, features_test = drop_unused_sensor_columns(train, test)
-    features_train, features_test, scaler = scale_sensor_features(
-        features_train, features_test
-    )
     rul_train = compute_train_rul(train, limit=rul_limit)
     rul_test = compute_test_rul(test, rul_df, limit=rul_limit)
-    x_train, y_train = time_window(
-        features_train, rul_train, window_size, step
+    train, test = drop_unused_sensor_columns(train, test)
+    windowed = create_fd001_windowed_features(
+        train,
+        test,
+        rul_train,
+        rul_test,
+        window_size=window_size,
+        step=step,
     )
-    x_test, y_test = time_window(features_test, rul_test, window_size, step)
-    return x_train, y_train, x_test, y_test, scaler
+    return (
+        windowed.x_train,
+        windowed.y_train,
+        windowed.x_test,
+        windowed.y_test,
+        windowed.scaler,
+    )
