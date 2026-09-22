@@ -9,6 +9,38 @@ The codebase is built using **TensorFlow/Keras**, **Scikit-Learn**, and **SciPy*
 
 ---
 
+## Project Folder Structure
+
+The repository separates raw data, reusable Python modules, and exploratory notebooks:
+
+```
+tcc/
+├── data/
+│   ├── raw/
+│   │   ├── training/     # train_FD001.txt (engine run-to-failure trajectories)
+│   │   ├── test/         # test_FD001.txt (truncated engine trajectories)
+│   │   └── result/       # RUL_FD001.txt (ground-truth RUL for test engines)
+│   └── processed/        # Intermediate or derived artifacts from preprocessing
+├── notebooks/            # Exploratory / experimental Jupyter notebooks
+├── src/
+│   ├── data.py           # Load, clean, and prepare C-MAPSS FD001 tables
+│   ├── features.py       # Scaling, feature selection, and sliding-window tensors
+│   ├── models.py         # LSTM/BiLSTM build, tuning, training, and evaluation
+│   └── comparacao_final.ipynb  # End-to-end comparison workflow (LSTM vs BiLSTM)
+├── readme.md
+└── .gitignore
+```
+
+**How the folders are organized**
+
+- **`data/`** — Local dataset storage (ignored by Git). `raw/` mirrors the NASA C-MAPSS FD001 split into training runs, test runs, and final RUL labels; `processed/` is reserved for cleaned or engineered outputs produced by the pipeline.
+- **`src/`** — Core pipeline code, split by responsibility: ingestion (`data.py`), feature engineering and windowing (`features.py`), and model search/training/metrics (`models.py`). The final comparative experiment lives here as `comparacao_final.ipynb`.
+- **`notebooks/`** — Space for additional exploratory analysis without mixing ad-hoc work into the reusable `src/` modules.
+
+Typical flow: load from `data/raw/` via `src/data.py` → build windows with `src/features.py` → train and compare models with `src/models.py` (driven from the comparison notebook).
+
+---
+
 ## 2. Theoretical Background & Mathematical Formulation
 
 ### 2.1 Long Short-Term Memory (LSTM)
