@@ -1,0 +1,42 @@
+---
+description: Project folder organization rules for the RUL LSTM/BiLSTM pipeline
+alwaysApply: true
+---
+
+# Folder Organization
+
+Keep the repository split by concern: datasets, reusable pipeline code, and exploratory work.
+
+```
+tcc/
+├── data/
+│   ├── raw/
+│   │   ├── training/   # train_FD00x.txt (run-to-failure)
+│   │   ├── test/       # test_FD00x.txt (truncated trajectories)
+│   │   └── result/     # RUL_FD00x.txt (test ground-truth RUL)
+│   └── processed/      # Cleaned / engineered artifacts only
+├── notebooks/          # Ad-hoc exploratory Jupyter notebooks
+├── src/                # Reusable pipeline modules + main experiment notebook
+├── readme.md
+└── .gitignore
+```
+
+## Placement Rules
+
+- **`data/raw/`** — Original C-MAPSS files only. Do not overwrite or write pipeline outputs here. Keep the `training/`, `test/`, and `result/` split.
+- **`data/processed/`** — Intermediate or derived artifacts from preprocessing/feature engineering. Never put raw NASA downloads here.
+- **`src/`** — Production pipeline code, one responsibility per module:
+  - `data.py` — load, clean, prepare tables
+  - `features.py` — scaling, feature selection, sliding windows
+  - `models.py` — LSTM/BiLSTM build, tuning, training, evaluation
+  - `comparacao_final.ipynb` — end-to-end LSTM vs BiLSTM comparison (lives in `src/`, not `notebooks/`)
+- **`notebooks/`** — Exploratory / experimental notebooks only. Do not put reusable helpers here; extract them into `src/`.
+
+## Do / Don't
+
+- ✅ Load from `data/raw/` → transform via `src/` → write derived outputs to `data/processed/`
+- ✅ Add new reusable functions to the matching `src/*.py` module
+- ✅ Put scratch analysis in `notebooks/`
+- ❌ Mix raw and processed data in the same folder
+- ❌ Duplicate pipeline logic inside notebooks when it belongs in `src/`
+- ❌ Commit `data/` contents or `__pycache__/` (they are gitignored)
