@@ -7,8 +7,10 @@ from pathlib import Path
 from typing import Any, Literal
 
 import keras_tuner
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from matplotlib.ticker import MaxNLocator
 from keras.callbacks import EarlyStopping, ModelCheckpoint
 from keras.layers import Bidirectional, Dense, Dropout, LSTM
 from keras.models import Sequential
@@ -342,6 +344,81 @@ def predict_rul(model: Sequential, x: np.ndarray) -> np.ndarray:
     return np.array([float(value) for value in predictions])
 
 
+def plot_training_history(history: Any, model_label: str) -> None:
+    """Plota loss (MAE) e MSE de treino e validação (primeira iteração)."""
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 6))
+    ax1.plot(history.history["loss"], label=f"Loss do treino ({model_label})")
+    ax1.plot(history.history["val_loss"], label=f"Loss da validação ({model_label})")
+    ax1.set_xlabel("Epoch")
+    ax1.set_ylabel("Loss (MAE)")
+    ax1.legend(loc="upper right")
+    ax1.xaxis.set_major_locator(MaxNLocator(integer=True))
+
+    ax2.plot(
+        history.history["mean_squared_error"],
+        label=f"MSE do treino ({model_label})",
+    )
+    ax2.plot(
+        history.history["val_mean_squared_error"],
+        label=f"MSE da validação ({model_label})",
+    )
+    ax2.set_xlabel("Epoch")
+    ax2.set_ylabel("Erro Quadrático Médio (MSE)")
+    ax2.legend(loc="upper right")
+    ax2.xaxis.set_major_locator(MaxNLocator(integer=True))
+
+    fig.suptitle(f"Avaliação do treinamento ({model_label})")
+    fig.tight_layout()
+    plt.show()
+
+
+def plot_rul_prediction_diagnostics(
+    y_test: np.ndarray,
+    y_pred: np.ndarray,
+    *,
+    model_label: str,
+    rul_limit: int = 130,
+    n_samples: int = 180,
+    random_state: int | None = None,
+) -> None:
+    """Plota amostra ordenada e scatter RUL real vs previsto."""
+    y_pred_flat = np.asarray(y_pred, dtype=float).reshape(-1)
+    y_true_flat = np.asarray(y_test, dtype=float).reshape(-1)
+    rng = np.random.default_rng(random_state)
+    n = min(n_samples, len(y_pred_flat))
+    indices = rng.choice(len(y_pred_flat), size=n, replace=False)
+    y_real_sample = y_true_flat[indices]
+    y_pred_sample = y_pred_flat[indices]
+    order = np.argsort(y_real_sample)
+    y_real_sample = y_real_sample[order]
+    y_pred_sample = y_pred_sample[order]
+
+    plt.figure(figsize=(10, 6))
+    plt.scatter(range(n), y_pred_sample, c="blue", label="RUL previsto")
+    plt.scatter(range(n), y_real_sample, c="red", label="RUL real")
+    plt.title(f"RUL real vs RUL previsto ({n} amostras) ({model_label})")
+    plt.ylabel("RUL")
+    plt.xlabel("Index")
+    plt.legend(loc="lower right")
+    for i in range(n):
+        plt.plot(
+            [i, i],
+            [y_pred_sample[i], y_real_sample[i]],
+            ls="--",
+            c="black",
+            alpha=0.7,
+        )
+    plt.show()
+
+    plt.figure(figsize=(10, 6))
+    plt.scatter(y_true_flat, y_pred_flat, c="blue")
+    plt.plot([0, rul_limit], [0, rul_limit], ls="--", c="red", alpha=0.8)
+    plt.title(f"RUL real vs RUL previsto ({model_label})")
+    plt.ylabel("RUL previsto")
+    plt.xlabel("RUL real")
+    plt.show()
+
+
 def run_repeated_train_eval(
     model: Sequential,
     x_train: np.ndarray,
@@ -355,7 +432,8 @@ def run_repeated_train_eval(
     epochs: int = 30,
     batch_size: int = 200,
     patience: int = 5,
-) -> pd.DataFrame:
+    capture_first_history: bool = False,
+) -> tuple[pd.DataFrame, Any | None]:
     """Repete treino + avaliação no conjunto de teste (como no notebook).
 
     O mesmo objeto ``model`` é reutilizado em todas as iterações.
@@ -375,14 +453,16 @@ def run_repeated_train_eval(
         patience: Paciência do early stopping.
 
     Returns:
-        DataFrame com colunas ``Iteração``, ``MSE``, ``RMSE``, ``MAE``, ``R2`` e
-        ``tempo`` (segundos por iteração).
+        Tupla ``(results, first_history)``. ``first_history`` é o objeto
+        retornado por ``model.fit`` na primeira iteração quando
+        ``capture_first_history=True``; caso contrário, ``None``.
     """
     callbacks = create_training_callbacks(checkpoint_path, patience=patience)
     rows: list[dict[str, Any]] = []
+    first_history: Any | None = None
     for iteration in range(n_iterations):
         start = time.time()
-        model.fit(
+        history = model.fit(
             x_train,
             y_train,
             validation_data=(x_val, y_val),
@@ -391,6 +471,8 @@ def run_repeated_train_eval(
             callbacks=callbacks,
             verbose=0,
         )
+        if iteration == 0 and capture_first_history:
+            first_history = history
         y_pred = predict_rul(model, x_test)
         elapsed = time.time() - start
         metrics = compute_rul_metrics(y_test, y_pred)
@@ -401,7 +483,7 @@ def run_repeated_train_eval(
                 "tempo": elapsed,
             }
         )
-    return pd.DataFrame(rows)
+    return pd.DataFrame(rows), first_history
 
 
 def summarize_experiment_results(results: pd.DataFrame) -> pd.DataFrame:

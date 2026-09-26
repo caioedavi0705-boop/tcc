@@ -62,21 +62,36 @@ class FD001RawData(NamedTuple):
     rul: pd.DataFrame
 
 
+def _resolve_fd001_file_paths(base: Path) -> tuple[Path, Path, Path]:
+    """Resolve caminhos FD001 (flat ou ``training/``, ``test/``, ``result/``)."""
+    flat_train = base / "train_FD001.txt"
+    flat_test = base / "test_FD001.txt"
+    flat_rul = base / "RUL_FD001.txt"
+    if flat_train.is_file() and flat_test.is_file() and flat_rul.is_file():
+        return flat_train, flat_test, flat_rul
+    return (
+        base / "training" / "train_FD001.txt",
+        base / "test" / "test_FD001.txt",
+        base / "result" / "RUL_FD001.txt",
+    )
+
+
 def load_fd001_raw(data_dir: str | Path) -> FD001RawData:
     """Carrega os arquivos de treino, teste e RUL do FD001.
 
     Args:
-        data_dir: Diretório que contém ``train_FD001.txt``, ``test_FD001.txt`` e
-            ``RUL_FD001.txt``.
+        data_dir: Diretório base com os arquivos FD001 (mesmo nível ou subpastas
+            ``training/``, ``test/`` e ``result/``).
 
     Returns:
         Tupla nomeada com os três DataFrames lidos (sem cabeçalho).
     """
     base = Path(data_dir)
+    train_path, test_path, rul_path = _resolve_fd001_file_paths(base)
     read_kwargs = {"sep": r"\s+", "header": None}
-    train = pd.read_csv(base / "train_FD001.txt", **read_kwargs)
-    test = pd.read_csv(base / "test_FD001.txt", **read_kwargs)
-    rul = pd.read_csv(base / "RUL_FD001.txt", **read_kwargs)
+    train = pd.read_csv(train_path, **read_kwargs)
+    test = pd.read_csv(test_path, **read_kwargs)
+    rul = pd.read_csv(rul_path, **read_kwargs)
     return FD001RawData(train=train, test=test, rul=rul)
 
 
@@ -129,7 +144,7 @@ def drop_unused_sensor_columns(
     test: pd.DataFrame,
     columns_to_drop: list[str] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Remove sensores não utilizados após a limpeza inicial.
+    """Remove colunas de sensores não utilizadas no FD001.
 
     Args:
         train: DataFrame de treino com cabeçalho.
@@ -137,7 +152,7 @@ def drop_unused_sensor_columns(
         columns_to_drop: Colunas a remover; usa ``COLUMNS_TO_DROP`` se omitida.
 
     Returns:
-        Par ``(train, test)`` com colunas redundantes removidas.
+        Par ``(train, test)`` sem as colunas descartadas.
     """
     drop_cols = columns_to_drop or COLUMNS_TO_DROP
     return (
