@@ -127,12 +127,12 @@ N_{\text{total}}^{(i)} - N(t), & \text{if } N_{\text{total}}^{(i)} - N(t) < 130
 
 ## 6. Hyperparameter Tuning & Network Architectures
 
-Hyperparameter optimization was performed via **Bayesian Optimization** using `KerasTuner` over 15 trials with 5 epochs each. Loss optimized during search: **MSE**.
+Hyperparameter optimization was performed via **Hyperband** (`KerasTuner`) with `max_epochs=15`, `factor=3`, and one Hyperband iteration. Search training used **batch size 200** and **early stopping** on validation loss (patience 3). Objective minimized during search: validation **MAE** (`val_loss`).
 
 ### Search Space
 - **Recurrent Layers:** Up to 4 LSTM or BiLSTM layers.
-- **Dense Layers:** Up to 2 Fully Connected layers.
-- **Neurons per Layer:** Potentials of 2 in range $[32, 256]$.
+- **Dense Layers:** Up to 1 optional fully connected hidden layer (plus linear output).
+- **Neurons per Layer:** $\{32, 64, 128, 256\}$.
 - **Dropout Rate:** $[0.2, 0.5]$ with step $0.1$.
 - **Learning Rate:** $\{0.01, 0.001, 0.0001\}$ using the `RMSprop` optimizer.
 - **Activation Functions:**

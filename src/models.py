@@ -21,7 +21,7 @@ from sklearn.model_selection import train_test_split
 
 ModelKind = Literal["lstm", "bilstm"]
 
-LSTM_UNIT_CHOICES = [32, 64, 128, 256, 512]
+LSTM_UNIT_CHOICES = [32, 64, 128, 256]
 DROPOUT_CHOICES = list(np.arange(0.2, 0.6, 0.1))
 LEARNING_RATE_CHOICES = [0.01, 0.001, 0.0001]
 
@@ -104,6 +104,7 @@ def build_model_lstm(
         ),
         loss="mae",
         metrics=["mean_squared_error"],
+        jit_compile=True,
     )
     return model
 
@@ -162,6 +163,7 @@ def build_model_bilstm(
         ),
         loss="mae",
         metrics=["mean_squared_error"],
+        jit_compile=True,
     )
     return model
 
@@ -238,11 +240,14 @@ def search_hyperparameters(
     y_val: np.ndarray,
     tuner_directory: str | Path,
     project_name: str,
-    max_trials: int = 15,
-    search_epochs: int = 5,
+    max_epochs: int = 15,
+    factor: int = 3,
+    hyperband_iterations: int = 1,
+    batch_size: int = 200,
+    patience: int = 3,
     overwrite: bool = True,
 ) -> tuple[Sequential, dict[str, Any]]:
-    """Executa busca bayesiana de hiperparâmetros.
+    """Executa busca de hiperparâmetros com Hyperband (Keras Tuner).
 
     Args:
         model_kind: ``\"lstm\"`` ou ``\"bilstm\"``.
@@ -251,9 +256,12 @@ def search_hyperparameters(
         x_val: Features de validação.
         y_val: Alvos de validação.
         tuner_directory: Diretório base para logs do Keras Tuner.
-        project_name: Nome do subprojeto (ex.: ``hyper_lstm``).
-        max_trials: Número máximo de trials.
-        search_epochs: Épocas por trial na fase de busca.
+        project_name: Nome do subprojeto (ex.: ``hyper_lstm_hyperband``).
+        max_epochs: Épocas máximas por trial promovido no Hyperband.
+        factor: Fator de redução entre brackets do Hyperband.
+        hyperband_iterations: Número de iterações Hyperband.
+        batch_size: Tamanho do batch na busca (alinhado ao treino final).
+        patience: Paciência do early stopping na busca (``val_loss``).
         overwrite: Se ``True``, sobrescreve resultados anteriores do projeto.
 
     Returns:
@@ -261,10 +269,12 @@ def search_hyperparameters(
     """
     input_shape = (x_train.shape[1], x_train.shape[2])
     build_model = _build_tuner_factory(model_kind, input_shape)
-    tuner = keras_tuner.BayesianOptimization(
+    tuner = keras_tuner.Hyperband(
         build_model,
         objective="val_loss",
-        max_trials=max_trials,
+        max_epochs=max_epochs,
+        factor=factor,
+        hyperband_iterations=hyperband_iterations,
         directory=str(tuner_directory),
         project_name=project_name,
         overwrite=overwrite,
@@ -272,8 +282,9 @@ def search_hyperparameters(
     tuner.search(
         x_train,
         y_train,
-        epochs=search_epochs,
         validation_data=(x_val, y_val),
+        batch_size=batch_size,
+        callbacks=[EarlyStopping(monitor="val_loss", patience=patience)],
     )
     best_model = tuner.get_best_models(num_models=1)[0]
     best_trial = tuner.oracle.get_best_trials(num_trials=1)[0]
