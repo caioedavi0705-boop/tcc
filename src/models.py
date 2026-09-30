@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import io
+import json
 import time
 from pathlib import Path
 from typing import Any, Literal
@@ -355,22 +357,84 @@ def predict_rul(model: Sequential, x: np.ndarray) -> np.ndarray:
     return np.array([float(value) for value in predictions])
 
 
-def plot_training_history(history: Any, model_label: str) -> None:
+def show_figure(
+    fig: plt.Figure,
+    save_path: str | Path | None = None,
+) -> bytes:
+    """Publica a figura como PNG na saída da célula.
+
+    ``plt.show()`` não grava imagem quando o Matplotlib usa o backend ``Agg``.
+    A imagem é enviada com o tipo ``image/png``, que o notebook e o
+    ``nbconvert`` preservam.
+
+    Args:
+        fig: Figura Matplotlib já desenhada.
+        save_path: Se informado, também grava o PNG nesse caminho.
+
+    Returns:
+        Bytes PNG da figura.
+    """
+    buffer = io.BytesIO()
+    fig.savefig(buffer, format="png", bbox_inches="tight")
+    png = buffer.getvalue()
+    plt.close(fig)
+    if save_path is not None:
+        path = Path(save_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(png)
+    try:
+        from IPython.display import publish_display_data
+
+        publish_display_data({"image/png": png})
+    except Exception:
+        return png
+    return png
+
+
+def _history_series(history: Any, *names: str) -> list[float]:
+    """Retorna a primeira série presente em ``history.history``."""
+    series = history.history
+    for name in names:
+        if name in series:
+            return series[name]
+    available = ", ".join(sorted(series))
+    raise KeyError(f"Nenhuma das métricas {names} está no histórico ({available}).")
+
+
+def save_training_history(history: Any, path: str | Path) -> None:
+    """Grava as séries de ``model.fit`` para redesenhar as curvas depois."""
+    payload = {
+        key: [float(value) for value in values]
+        for key, values in history.history.items()
+    }
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def plot_training_history(
+    history: Any,
+    model_label: str,
+    save_path: str | Path | None = None,
+) -> None:
     """Plota loss (MAE) e MSE de treino e validação (primeira iteração)."""
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 6))
-    ax1.plot(history.history["loss"], label=f"Loss do treino ({model_label})")
-    ax1.plot(history.history["val_loss"], label=f"Loss da validação ({model_label})")
+    ax1.plot(_history_series(history, "loss"), label=f"Loss do treino ({model_label})")
+    ax1.plot(
+        _history_series(history, "val_loss"),
+        label=f"Loss da validação ({model_label})",
+    )
     ax1.set_xlabel("Epoch")
     ax1.set_ylabel("Loss (MAE)")
     ax1.legend(loc="upper right")
     ax1.xaxis.set_major_locator(MaxNLocator(integer=True))
 
     ax2.plot(
-        history.history["mean_squared_error"],
+        _history_series(history, "mean_squared_error", "mse"),
         label=f"MSE do treino ({model_label})",
     )
     ax2.plot(
-        history.history["val_mean_squared_error"],
+        _history_series(history, "val_mean_squared_error", "val_mse"),
         label=f"MSE da validação ({model_label})",
     )
     ax2.set_xlabel("Epoch")
@@ -380,7 +444,7 @@ def plot_training_history(history: Any, model_label: str) -> None:
 
     fig.suptitle(f"Avaliação do treinamento ({model_label})")
     fig.tight_layout()
-    plt.show()
+    show_figure(fig, save_path)
 
 
 def plot_rul_prediction_diagnostics(
@@ -391,6 +455,7 @@ def plot_rul_prediction_diagnostics(
     rul_limit: int = 130,
     n_samples: int = 180,
     random_state: int | None = None,
+    figure_dir: str | Path | None = None,
 ) -> None:
     """Plota amostra ordenada e scatter RUL real vs previsto."""
     y_pred_flat = np.asarray(y_pred, dtype=float).reshape(-1)
@@ -419,15 +484,25 @@ def plot_rul_prediction_diagnostics(
             c="black",
             alpha=0.7,
         )
-    plt.show()
+    sample_fig = plt.gcf()
+    sample_fig.tight_layout()
+    sample_path = None
+    scatter_path = None
+    if figure_dir is not None:
+        directory = Path(figure_dir)
+        label = model_label.lower()
+        sample_path = directory / f"{label}_rul_sample.png"
+        scatter_path = directory / f"{label}_rul_scatter.png"
+    show_figure(sample_fig, sample_path)
 
-    plt.figure(figsize=(10, 6))
+    scatter_fig = plt.figure(figsize=(10, 6))
     plt.scatter(y_true_flat, y_pred_flat, c="blue")
     plt.plot([0, rul_limit], [0, rul_limit], ls="--", c="red", alpha=0.8)
     plt.title(f"RUL real vs RUL previsto ({model_label})")
     plt.ylabel("RUL previsto")
     plt.xlabel("RUL real")
-    plt.show()
+    scatter_fig.tight_layout()
+    show_figure(scatter_fig, scatter_path)
 
 
 def run_repeated_train_eval(
@@ -484,6 +559,12 @@ def run_repeated_train_eval(
         )
         if iteration == 0 and capture_first_history:
             first_history = history
+            save_training_history(
+                history,
+                Path(checkpoint_path).with_name(
+                    f"{Path(checkpoint_path).stem}_first_history.json"
+                ),
+            )
         y_pred = predict_rul(model, x_test)
         elapsed = time.time() - start
         metrics = compute_rul_metrics(y_test, y_pred)
