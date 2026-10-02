@@ -26,7 +26,7 @@ Other search settings:
 - LSTM and BiLSTM models are compiled with `jit_compile=True`, so both the search and the later `model.fit` calls use the compiled model. If XLA fails on a machine, set `jit_compile=False` in the two `compile()` calls.
 - The objective is still `val_loss`. That loss is MAE, not MSE.
 
-In `src/comparacao_final.ipynb` the two search calls use project names `hyper_lstm_hyperband` and `hyper_bi_hyperband`, with `overwrite=False`. Old Bayesian logs under `hyper_lstm` and `hyper_bi` cannot be resumed by Hyperband. The new names avoid that clash and let a later rerun continue finished trials.
+The LSTM and BiLSTM notebooks (`src/lstm.ipynb` and `src/bilstm.ipynb`) call the search with project names `hyper_lstm_hyperband` and `hyper_bi_hyperband`, with `overwrite=False`. Old Bayesian logs under `hyper_lstm` and `hyper_bi` cannot be resumed by Hyperband. The new names avoid that clash and let a later rerun continue finished trials.
 
 `readme.md` section 6 documents Hyperband, batch size 200, early stopping, the unit set `{32, 64, 128, 256}`, and validation MAE as the search objective.
 

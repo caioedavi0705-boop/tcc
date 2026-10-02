@@ -578,6 +578,38 @@ def run_repeated_train_eval(
     return pd.DataFrame(rows), first_history
 
 
+def save_experiment_results(results: pd.DataFrame, path: str | Path) -> None:
+    """Grava a tabela de iterações para a comparação estatística.
+
+    Args:
+        results: Saída de ``run_repeated_train_eval``.
+        path: Caminho do arquivo ``.csv``.
+    """
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    results.to_csv(destination, index=False)
+
+
+def load_experiment_results(path: str | Path) -> pd.DataFrame:
+    """Lê a tabela de iterações gravada por ``save_experiment_results``."""
+    return pd.read_csv(path)
+
+
+def save_best_params(params: dict[str, Any], path: str | Path) -> None:
+    """Grava os hiperparâmetros escolhidos na busca como JSON."""
+    payload: dict[str, Any] = {}
+    for key, value in params.items():
+        if isinstance(value, (np.floating, float)):
+            payload[key] = float(value)
+        elif isinstance(value, (np.integer, int)):
+            payload[key] = int(value)
+        else:
+            payload[key] = value
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
 def summarize_experiment_results(results: pd.DataFrame) -> pd.DataFrame:
     """Resume média e desvio padrão das métricas por modelo.
 

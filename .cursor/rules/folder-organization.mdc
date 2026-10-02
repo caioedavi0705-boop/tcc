@@ -29,7 +29,8 @@ tcc/
   - `data.py` — load, clean, prepare tables
   - `features.py` — scaling, feature selection, sliding windows
   - `models.py` — LSTM/BiLSTM build, tuning, training, evaluation
-  - `comparacao_final.ipynb` — end-to-end LSTM vs BiLSTM comparison (lives in `src/`, not `notebooks/`)
+  - `lstm.ipynb`, `bilstm.ipynb` — model search, repeated training, plots, and saved run tables (live in `src/`, not `notebooks/`)
+  - `comparacao_wilcoxon.ipynb` — Wilcoxon comparison of the tables saved by the model notebooks
 - **`notebooks/`** — Exploratory / experimental notebooks only. Do not put reusable helpers here; extract them into `src/`.
 
 ## Do / Don't
