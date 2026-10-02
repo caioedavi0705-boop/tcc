@@ -28,9 +28,9 @@ tcc/
 - **`src/`** — Production pipeline code, one responsibility per module:
   - `data.py` — load, clean, prepare tables
   - `features.py` — scaling, feature selection, sliding windows
-  - `models.py` — LSTM/BiLSTM build, tuning, training, evaluation
-  - `lstm.ipynb`, `bilstm.ipynb` — model search, repeated training, plots, and saved run tables (live in `src/`, not `notebooks/`)
-  - `comparacao_wilcoxon.ipynb` — Wilcoxon comparison of the tables saved by the model notebooks
+  - `models.py` — LSTM/BiLSTM/Transformer build, tuning, training, evaluation
+  - `lstm.ipynb`, `bilstm.ipynb`, `transformer.ipynb` — model search, repeated training, plots, and saved run tables (live in `src/`, not `notebooks/`)
+  - `comparacao_wilcoxon.ipynb` — pairwise Wilcoxon comparison of the tables saved by the model notebooks
 - **`notebooks/`** — Exploratory / experimental notebooks only. Do not put reusable helpers here; extract them into `src/`.
 
 ## Do / Don't

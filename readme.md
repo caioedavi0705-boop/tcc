@@ -25,10 +25,11 @@ tcc/
 ├── src/
 │   ├── data.py           # Load, clean, and prepare C-MAPSS FD001 tables
 │   ├── features.py       # Scaling, feature selection, and sliding-window tensors
-│   ├── models.py         # LSTM/BiLSTM build, tuning, training, and evaluation
+│   ├── models.py         # LSTM/BiLSTM/Transformer build, tuning, training, and evaluation
 │   ├── lstm.ipynb        # LSTM search, repeated training, and plots
 │   ├── bilstm.ipynb      # BiLSTM search, repeated training, and plots
-│   └── comparacao_wilcoxon.ipynb  # Wilcoxon comparison of the saved runs
+│   ├── transformer.ipynb # Transformer search, repeated training, and plots
+│   └── comparacao_wilcoxon.ipynb  # Pairwise Wilcoxon comparison of the saved runs
 ├── readme.md
 └── .gitignore
 ```
@@ -36,10 +37,10 @@ tcc/
 **How the folders are organized**
 
 - **`data/`** — Local dataset storage (ignored by Git). `raw/` mirrors the NASA C-MAPSS FD001 split into training runs, test runs, and final RUL labels; `processed/` is reserved for cleaned or engineered outputs produced by the pipeline.
-- **`src/`** — Core pipeline code, split by responsibility: ingestion (`data.py`), feature engineering and windowing (`features.py`), and model search/training/metrics (`models.py`). The experiment is split into `lstm.ipynb`, `bilstm.ipynb`, and `comparacao_wilcoxon.ipynb`. The model notebooks save iteration tables under `data/processed/results/` for the Wilcoxon notebook.
+- **`src/`** — Core pipeline code, split by responsibility: ingestion (`data.py`), feature engineering and windowing (`features.py`), and model search/training/metrics (`models.py`). The experiment is split into `lstm.ipynb`, `bilstm.ipynb`, `transformer.ipynb`, and `comparacao_wilcoxon.ipynb`. The model notebooks save iteration tables under `data/processed/results/` for the Wilcoxon notebook.
 - **`notebooks/`** — Space for additional exploratory analysis without mixing ad-hoc work into the reusable `src/` modules.
 
-Typical flow: load from `data/raw/` via `src/data.py` → build windows with `src/features.py` → train LSTM and BiLSTM from their notebooks with `src/models.py` → compare the saved tables in `comparacao_wilcoxon.ipynb`.
+Typical flow: load from `data/raw/` via `src/data.py` → build windows with `src/features.py` → train LSTM, BiLSTM, and the Transformer from their notebooks with `src/models.py` → compare the saved tables in `comparacao_wilcoxon.ipynb`.
 
 ---
 
@@ -141,6 +142,17 @@ Hyperparameter optimization was performed via **Hyperband** (`KerasTuner`) with 
   - Recurrent Layers: $\tanh$
   - Hidden Dense Layers: $\text{ReLU}$
   - Final Output Layer: Linear
+
+### Transformer search space
+The encoder-only Transformer uses the same Hyperband settings, loss, optimizer, dropout rates, and learning rates. Its own choices are:
+
+- **Encoder blocks:** 1 to 3
+- **Model dimension (`d_model`):** $\{32, 64, 128\}$
+- **Attention heads:** $\{2, 4\}$
+- **Feed-forward width:** $\{64, 128, 256\}$
+- **Optional dense layer:** 0 or 1 hidden layer, with the same unit choices as the recurrent models
+
+Each encoder block is multi-head self-attention plus a ReLU feed-forward block, both with residual connections and layer normalization. A fixed sinusoidal positional encoding is added after projecting the 17 sensors to `d_model`. The sequence is pooled by global average pooling before the linear RUL output.
 
 ---
 

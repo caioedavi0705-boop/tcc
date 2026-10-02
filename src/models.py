@@ -8,22 +8,36 @@ import time
 from pathlib import Path
 from typing import Any, Literal
 
+import keras
 import keras_tuner
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from matplotlib.ticker import MaxNLocator
+from keras import ops
 from keras.callbacks import EarlyStopping, ModelCheckpoint
-from keras.layers import Bidirectional, Dense, Dropout, LSTM
-from keras.models import Sequential
+from keras.layers import (
+    Bidirectional,
+    Dense,
+    Dropout,
+    GlobalAveragePooling1D,
+    Input,
+    LayerNormalization,
+    LSTM,
+    MultiHeadAttention,
+)
+from keras.models import Model, Sequential
 from keras.optimizers import RMSprop
 from scipy.stats import wilcoxon
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.model_selection import train_test_split
 
-ModelKind = Literal["lstm", "bilstm"]
+ModelKind = Literal["lstm", "bilstm", "transformer"]
 
 LSTM_UNIT_CHOICES = [32, 64, 128, 256]
+TRANSFORMER_D_MODEL_CHOICES = [32, 64, 128]
+TRANSFORMER_HEAD_CHOICES = [2, 4]
+TRANSFORMER_FF_CHOICES = [64, 128, 256]
 DROPOUT_CHOICES = list(np.arange(0.2, 0.6, 0.1))
 LEARNING_RATE_CHOICES = [0.01, 0.001, 0.0001]
 
@@ -170,16 +184,135 @@ def build_model_bilstm(
     return model
 
 
+@keras.saving.register_keras_serializable(package="rul")
+class SinusoidalPositionalEncoding(keras.layers.Layer):
+    """Soma uma codificação posicional senoidal fixa à sequência."""
+
+    def call(self, inputs, training=None):
+        seq_len = ops.shape(inputs)[1]
+        d_model = ops.shape(inputs)[2]
+        position = ops.cast(ops.arange(seq_len)[:, None], inputs.dtype)
+        dimension = ops.cast(ops.arange(d_model)[None, :], inputs.dtype)
+        depth = ops.cast(d_model, inputs.dtype)
+        angles = position / ops.power(10000.0, (2 * (dimension // 2)) / depth)
+        even = ops.equal(ops.cast(dimension, "int32") % 2, 0)
+        encoding = ops.where(even, ops.sin(angles), ops.cos(angles))
+        return inputs + encoding
+
+
+@keras.saving.register_keras_serializable(package="rul")
+class TransformerEncoderBlock(keras.layers.Layer):
+    """Bloco encoder: atenção, residual e feed-forward."""
+
+    def __init__(
+        self,
+        d_model: int,
+        num_heads: int,
+        ff_dim: int,
+        dropout_rate: float,
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+        self.d_model = int(d_model)
+        self.num_heads = int(num_heads)
+        self.ff_dim = int(ff_dim)
+        self.dropout_rate = float(dropout_rate)
+        self.attention = MultiHeadAttention(
+            num_heads=self.num_heads,
+            key_dim=self.d_model // self.num_heads,
+        )
+        self.attention_dropout = Dropout(self.dropout_rate)
+        self.attention_norm = LayerNormalization()
+        self.feed_forward = Dense(self.ff_dim, activation="relu")
+        self.projection = Dense(self.d_model)
+        self.feed_forward_dropout = Dropout(self.dropout_rate)
+        self.feed_forward_norm = LayerNormalization()
+
+    def call(self, inputs, training=None):
+        attention = self.attention(inputs, inputs, training=training)
+        attention = self.attention_dropout(attention, training=training)
+        x = self.attention_norm(inputs + attention)
+        hidden = self.feed_forward(x)
+        hidden = self.projection(hidden)
+        hidden = self.feed_forward_dropout(hidden, training=training)
+        return self.feed_forward_norm(x + hidden)
+
+    def get_config(self):
+        config = super().get_config()
+        config.update(
+            {
+                "d_model": self.d_model,
+                "num_heads": self.num_heads,
+                "ff_dim": self.ff_dim,
+                "dropout_rate": self.dropout_rate,
+            }
+        )
+        return config
+
+
+def build_model_transformer(
+    hp: keras_tuner.HyperParameters,
+    input_shape: tuple[int, int],
+) -> Model:
+    """Constrói um Transformer encoder para regressão de RUL.
+
+    Args:
+        hp: Hiperparâmetros sugeridos pelo tuner.
+        input_shape: ``(window_size, n_sensores)``.
+
+    Returns:
+        Modelo Keras compilado com loss MAE e métrica MSE.
+    """
+    n_blocks = hp.Int("layers_encoder", 1, 3)
+    d_model = hp.Choice("d_model", TRANSFORMER_D_MODEL_CHOICES)
+    num_heads = hp.Choice("num_heads", TRANSFORMER_HEAD_CHOICES)
+    ff_dim = hp.Choice("ff_dim", TRANSFORMER_FF_CHOICES)
+    dropout_rate = hp.Choice("dropout", DROPOUT_CHOICES)
+    n_layers_dense = hp.Int("layers_dense", 0, 1)
+
+    inputs = Input(shape=input_shape)
+    x = Dense(d_model, name="project")(inputs)
+    x = SinusoidalPositionalEncoding(name="positional_encoding")(x)
+    for i in range(n_blocks):
+        x = TransformerEncoderBlock(
+            d_model,
+            num_heads,
+            ff_dim,
+            dropout_rate,
+            name=f"enc_{i}",
+        )(x)
+    x = GlobalAveragePooling1D(name="pool")(x)
+    for i in range(n_layers_dense):
+        x = Dense(
+            hp.Choice(f"dense_{i}", LSTM_UNIT_CHOICES),
+            activation="relu",
+            name=f"dense_{i}",
+        )(x)
+    outputs = Dense(1, activation="linear", name="rul")(x)
+    model = Model(inputs, outputs)
+    model.compile(
+        optimizer=RMSprop(
+            learning_rate=hp.Choice("learning_rate", LEARNING_RATE_CHOICES)
+        ),
+        loss="mae",
+        metrics=["mean_squared_error"],
+        jit_compile=True,
+    )
+    return model
+
+
 def _build_tuner_factory(
     model_kind: ModelKind,
     input_shape: tuple[int, int],
 ):
     """Retorna função ``build_model(hp)`` fechada sobre ``input_shape``."""
 
-    def build_model(hp: keras_tuner.HyperParameters) -> Sequential:
+    def build_model(hp: keras_tuner.HyperParameters) -> Model:
         if model_kind == "lstm":
             return build_model_lstm(hp, input_shape)
-        return build_model_bilstm(hp, input_shape)
+        if model_kind == "bilstm":
+            return build_model_bilstm(hp, input_shape)
+        return build_model_transformer(hp, input_shape)
 
     return build_model
 
@@ -234,6 +367,33 @@ def summarize_bilstm_hyperparameters(param_values: dict[str, Any]) -> dict[str, 
     return best_params
 
 
+def summarize_transformer_hyperparameters(param_values: dict[str, Any]) -> dict[str, Any]:
+    """Organiza hiperparâmetros ótimos do Transformer.
+
+    Args:
+        param_values: Dicionário ``values`` do trial vencedor do Keras Tuner.
+
+    Returns:
+        Mapa legível de hiperparâmetros (inclui camada de saída com valor 1).
+    """
+    n_dense = int(param_values.get("layers_dense", 0)) + 1
+    best_params: dict[str, Any] = {
+        "layers_encoder": int(param_values.get("layers_encoder", 1)),
+        "d_model": param_values["d_model"],
+        "num_heads": param_values["num_heads"],
+        "ff_dim": param_values["ff_dim"],
+        "dropout": param_values["dropout"],
+    }
+    for k in range(n_dense):
+        key = f"dense_{k}"
+        if k < n_dense - 1:
+            best_params[key] = param_values[key]
+        else:
+            best_params[key] = 1
+    best_params["learning_rate"] = param_values["learning_rate"]
+    return best_params
+
+
 def search_hyperparameters(
     model_kind: ModelKind,
     x_train: np.ndarray,
@@ -248,11 +408,11 @@ def search_hyperparameters(
     batch_size: int = 200,
     patience: int = 3,
     overwrite: bool = True,
-) -> tuple[Sequential, dict[str, Any]]:
+) -> tuple[Model, dict[str, Any]]:
     """Executa busca de hiperparâmetros com Hyperband (Keras Tuner).
 
     Args:
-        model_kind: ``\"lstm\"`` ou ``\"bilstm\"``.
+        model_kind: ``\"lstm\"``, ``\"bilstm\"`` ou ``\"transformer\"``.
         x_train: Features de treino.
         y_train: Alvos de treino.
         x_val: Features de validação.
@@ -293,8 +453,10 @@ def search_hyperparameters(
     param_values = best_trial.hyperparameters.get_config()["values"]
     if model_kind == "lstm":
         summary = summarize_lstm_hyperparameters(param_values)
-    else:
+    elif model_kind == "bilstm":
         summary = summarize_bilstm_hyperparameters(param_values)
+    else:
+        summary = summarize_transformer_hyperparameters(param_values)
     return best_model, summary
 
 
@@ -343,7 +505,7 @@ def compute_rul_metrics(
     }
 
 
-def predict_rul(model: Sequential, x: np.ndarray) -> np.ndarray:
+def predict_rul(model: Model, x: np.ndarray) -> np.ndarray:
     """Gera previsões de RUL achatadas.
 
     Args:
@@ -506,7 +668,7 @@ def plot_rul_prediction_diagnostics(
 
 
 def run_repeated_train_eval(
-    model: Sequential,
+    model: Model,
     x_train: np.ndarray,
     y_train: np.ndarray,
     x_val: np.ndarray,
