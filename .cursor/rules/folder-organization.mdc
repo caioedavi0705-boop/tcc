@@ -16,6 +16,7 @@ tcc/
 │   │   └── result/     # RUL_FD00x.txt (test ground-truth RUL)
 │   └── processed/      # Cleaned / engineered artifacts only
 ├── notebooks/          # Ad-hoc exploratory Jupyter notebooks
+├── output/             # Written comparison summaries and experiment reports
 ├── src/                # Reusable pipeline modules + main experiment notebook
 ├── readme.md
 └── .gitignore
@@ -31,6 +32,7 @@ tcc/
   - `models.py` — LSTM/BiLSTM/Transformer build, tuning, training, evaluation
   - `lstm.ipynb`, `bilstm.ipynb`, `transformer.ipynb` — model search, repeated training, plots, and saved run tables (live in `src/`, not `notebooks/`)
   - `comparacao_wilcoxon.ipynb` — pairwise Wilcoxon comparison of the tables saved by the model notebooks
+- **`output/`** — Human-readable experiment summaries (e.g. `comparison_1.md`). Do not put raw data or model checkpoints here.
 - **`notebooks/`** — Exploratory / experimental notebooks only. Do not put reusable helpers here; extract them into `src/`.
 
 ## Do / Don't
@@ -38,6 +40,7 @@ tcc/
 - ✅ Load from `data/raw/` → transform via `src/` → write derived outputs to `data/processed/`
 - ✅ Add new reusable functions to the matching `src/*.py` module
 - ✅ Put scratch analysis in `notebooks/`
+- ✅ Put comparison write-ups in `output/`
 - ❌ Mix raw and processed data in the same folder
 - ❌ Duplicate pipeline logic inside notebooks when it belongs in `src/`
 - ❌ Commit `data/` contents or `__pycache__/` (they are gitignored)
