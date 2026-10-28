@@ -15,7 +15,7 @@ import numpy as np
 import pandas as pd
 from matplotlib.ticker import MaxNLocator
 from keras import ops
-from keras.callbacks import EarlyStopping, ModelCheckpoint
+from keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLROnPlateau
 from keras.layers import (
     Bidirectional,
     Dense,
@@ -39,7 +39,12 @@ TRANSFORMER_D_MODEL_CHOICES = [32, 64, 128]
 TRANSFORMER_HEAD_CHOICES = [2, 4]
 TRANSFORMER_FF_CHOICES = [64, 128, 256]
 DROPOUT_CHOICES = list(np.arange(0.2, 0.6, 0.1))
-LEARNING_RATE_CHOICES = [0.01, 0.001, 0.0001]
+LEARNING_RATE_CHOICES = [0.001, 0.0001, 0.00001]
+
+
+def _rmsprop(learning_rate: float) -> RMSprop:
+    """RMSprop com gradient clipping para treino mais estável."""
+    return RMSprop(learning_rate=learning_rate, clipnorm=1.0)
 
 
 def split_windowed_data(
@@ -67,6 +72,39 @@ def split_windowed_data(
         x_val.astype("float32"),
         y_train.astype("float32"),
         y_val.astype("float32"),
+    )
+
+
+def split_windowed_data_by_engine(
+    x: np.ndarray,
+    y: np.ndarray,
+    engine_ids: np.ndarray,
+    test_size: float = 0.2,
+    random_state: int = 1,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Divide janelas por motor (sem vazamento entre treino e validação).
+
+    Args:
+        x: Tensor de features ``(n_amostras, window_size, n_sensores)``.
+        y: Vetor de RUL alvo.
+        engine_ids: ID do motor por janela, alinhado a ``x``/``y``.
+        test_size: Fração de motores reservada para validação.
+        random_state: Semente para ``train_test_split`` nos IDs únicos.
+
+    Returns:
+        Tupla ``(x_train, x_val, y_train, y_val)`` em ``float32``.
+    """
+    unique_engines = np.unique(engine_ids)
+    train_engines, val_engines = train_test_split(
+        unique_engines, test_size=test_size, random_state=random_state
+    )
+    val_mask = np.isin(engine_ids, val_engines)
+    train_mask = ~val_mask
+    return (
+        x[train_mask].astype("float32"),
+        x[val_mask].astype("float32"),
+        y[train_mask].astype("float32"),
+        y[val_mask].astype("float32"),
     )
 
 
@@ -115,9 +153,7 @@ def build_model_lstm(
         )
     model.add(Dense(1, activation="linear"))
     model.compile(
-        optimizer=RMSprop(
-            learning_rate=hp.Choice("learning_rate", LEARNING_RATE_CHOICES)
-        ),
+        optimizer=_rmsprop(hp.Choice("learning_rate", LEARNING_RATE_CHOICES)),
         loss="mae",
         metrics=["mean_squared_error"],
         jit_compile=True,
@@ -174,9 +210,7 @@ def build_model_bilstm(
         )
     model.add(Dense(1, activation="linear"))
     model.compile(
-        optimizer=RMSprop(
-            learning_rate=hp.Choice("learning_rate", LEARNING_RATE_CHOICES)
-        ),
+        optimizer=_rmsprop(hp.Choice("learning_rate", LEARNING_RATE_CHOICES)),
         loss="mae",
         metrics=["mean_squared_error"],
         jit_compile=True,
@@ -291,9 +325,7 @@ def build_model_transformer(
     outputs = Dense(1, activation="linear", name="rul")(x)
     model = Model(inputs, outputs)
     model.compile(
-        optimizer=RMSprop(
-            learning_rate=hp.Choice("learning_rate", LEARNING_RATE_CHOICES)
-        ),
+        optimizer=_rmsprop(hp.Choice("learning_rate", LEARNING_RATE_CHOICES)),
         loss="mae",
         metrics=["mean_squared_error"],
         jit_compile=True,
@@ -446,7 +478,7 @@ def search_hyperparameters(
         y_train,
         validation_data=(x_val, y_val),
         batch_size=batch_size,
-        callbacks=[EarlyStopping(monitor="val_loss", patience=patience)],
+        callbacks=create_search_callbacks(patience=patience),
     )
     best_model = tuner.get_best_models(num_models=1)[0]
     best_trial = tuner.oracle.get_best_trials(num_trials=1)[0]
@@ -460,12 +492,33 @@ def search_hyperparameters(
     return best_model, summary
 
 
+def create_search_callbacks(
+    patience: int = 3,
+    monitor: str = "val_loss",
+) -> list[EarlyStopping | ReduceLROnPlateau]:
+    """Callbacks para busca Hyperband (sem checkpoint)."""
+    return [
+        EarlyStopping(
+            monitor=monitor,
+            patience=patience,
+            restore_best_weights=True,
+            min_delta=1e-3,
+        ),
+        ReduceLROnPlateau(
+            monitor=monitor,
+            factor=0.5,
+            patience=2,
+            min_lr=1e-5,
+        ),
+    ]
+
+
 def create_training_callbacks(
     checkpoint_path: str | Path,
     monitor: str = "val_loss",
     patience: int = 5,
-) -> list[EarlyStopping | ModelCheckpoint]:
-    """Cria callbacks de early stopping e checkpoint.
+) -> list[EarlyStopping | ModelCheckpoint | ReduceLROnPlateau]:
+    """Cria callbacks de early stopping, checkpoint e redução de LR.
 
     Args:
         checkpoint_path: Caminho do arquivo ``.h5`` para salvar melhor peso.
@@ -476,8 +529,25 @@ def create_training_callbacks(
         Lista de callbacks para ``model.fit``.
     """
     return [
-        EarlyStopping(monitor=monitor, patience=patience),
-        ModelCheckpoint(str(checkpoint_path), monitor=monitor),
+        EarlyStopping(
+            monitor=monitor,
+            patience=patience,
+            restore_best_weights=True,
+            min_delta=1e-3,
+        ),
+        ModelCheckpoint(
+            str(checkpoint_path),
+            monitor=monitor,
+            save_best_only=True,
+            save_weights_only=True,
+            mode="min",
+        ),
+        ReduceLROnPlateau(
+            monitor=monitor,
+            factor=0.5,
+            patience=2,
+            min_lr=1e-5,
+        ),
     ]
 
 
@@ -553,6 +623,52 @@ def show_figure(
     return png
 
 
+def _moving_average(values: list[float], window: int = 3) -> np.ndarray:
+    """Média móvel centrada (comprimento ``len(values) - window + 1``)."""
+    arr = np.asarray(values, dtype=float)
+    if len(arr) < window:
+        return arr
+    kernel = np.ones(window, dtype=float) / window
+    return np.convolve(arr, kernel, mode="valid")
+
+
+def fit_model_for_history(
+    model: Model,
+    x_train: np.ndarray,
+    y_train: np.ndarray,
+    x_val: np.ndarray,
+    y_val: np.ndarray,
+    checkpoint_path: str | Path,
+    *,
+    epochs: int = 80,
+    batch_size: int = 200,
+    patience: int = 10,
+) -> Any:
+    """Treina um clone do zero para curvas de validação interpretáveis.
+
+    O ``model`` original (ex.: pesos do Hyperband) não é alterado.
+    """
+    checkpoint_path = Path(checkpoint_path)
+    fresh = keras.models.clone_model(model)
+    fresh.compile_from_config(model.get_compile_config())
+    callbacks = create_training_callbacks(checkpoint_path, patience=patience)
+    history = fresh.fit(
+        x_train,
+        y_train,
+        validation_data=(x_val, y_val),
+        epochs=epochs,
+        batch_size=batch_size,
+        callbacks=callbacks,
+        verbose=0,
+    )
+    fresh.load_weights(checkpoint_path)
+    save_training_history(
+        history,
+        checkpoint_path.with_name(f"{checkpoint_path.stem}_history.json"),
+    )
+    return history
+
+
 def _history_series(history: Any, *names: str) -> list[float]:
     """Retorna a primeira série presente em ``history.history``."""
     series = history.history
@@ -579,26 +695,45 @@ def plot_training_history(
     model_label: str,
     save_path: str | Path | None = None,
 ) -> None:
-    """Plota loss (MAE) e MSE de treino e validação (primeira iteração)."""
+    """Plota loss (MAE) e MSE de treino e validação."""
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 6))
-    ax1.plot(_history_series(history, "loss"), label=f"Loss do treino ({model_label})")
-    ax1.plot(
-        _history_series(history, "val_loss"),
-        label=f"Loss da validação ({model_label})",
-    )
+    train_loss = _history_series(history, "loss")
+    val_loss = _history_series(history, "val_loss")
+    best_epoch = int(np.argmin(val_loss))
+
+    ax1.plot(train_loss, label=f"Loss do treino ({model_label})")
+    ax1.plot(val_loss, label=f"Loss da validação ({model_label})")
+    val_loss_ma = _moving_average(val_loss, window=3)
+    if len(val_loss_ma) >= 3:
+        ma_x = np.arange(2, 2 + len(val_loss_ma))
+        ax1.plot(
+            ma_x,
+            val_loss_ma,
+            ls="--",
+            alpha=0.7,
+            label="MA val (3 épocas, diagnóstico)",
+        )
+    ax1.axvline(best_epoch, color="gray", ls=":", alpha=0.8, label="Melhor val_loss")
     ax1.set_xlabel("Epoch")
     ax1.set_ylabel("Loss (MAE)")
     ax1.legend(loc="upper right")
     ax1.xaxis.set_major_locator(MaxNLocator(integer=True))
 
-    ax2.plot(
-        _history_series(history, "mean_squared_error", "mse"),
-        label=f"MSE do treino ({model_label})",
-    )
-    ax2.plot(
-        _history_series(history, "val_mean_squared_error", "val_mse"),
-        label=f"MSE da validação ({model_label})",
-    )
+    train_mse = _history_series(history, "mean_squared_error", "mse")
+    val_mse = _history_series(history, "val_mean_squared_error", "val_mse")
+    ax2.plot(train_mse, label=f"MSE do treino ({model_label})")
+    ax2.plot(val_mse, label=f"MSE da validação ({model_label})")
+    val_mse_ma = _moving_average(val_mse, window=3)
+    if len(val_mse_ma) >= 3:
+        ma_x = np.arange(2, 2 + len(val_mse_ma))
+        ax2.plot(
+            ma_x,
+            val_mse_ma,
+            ls="--",
+            alpha=0.7,
+            label="MA val (3 épocas, diagnóstico)",
+        )
+    ax2.axvline(best_epoch, color="gray", ls=":", alpha=0.8, label="Melhor val_loss")
     ax2.set_xlabel("Epoch")
     ax2.set_ylabel("Erro Quadrático Médio (MSE)")
     ax2.legend(loc="upper right")
@@ -719,6 +854,7 @@ def run_repeated_train_eval(
             callbacks=callbacks,
             verbose=0,
         )
+        model.load_weights(checkpoint_path)
         if iteration == 0 and capture_first_history:
             first_history = history
             save_training_history(

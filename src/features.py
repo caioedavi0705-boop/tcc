@@ -21,6 +21,7 @@ class FD001WindowedFeatures(NamedTuple):
     y_train: np.ndarray
     x_test: np.ndarray
     y_test: np.ndarray
+    train_window_engine_ids: np.ndarray
     scaler: MinMaxScaler
     features_train: pd.DataFrame
     features_test: pd.DataFrame
@@ -71,7 +72,7 @@ def time_window(
     window_size: int,
     step: int,
     id_column: str = ID_COLUMN,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Monta janelas deslizantes de sensores e o RUL no fim da janela.
 
     Args:
@@ -82,11 +83,12 @@ def time_window(
         id_column: Coluna de ID do motor.
 
     Returns:
-        Tupla ``(x, y)`` com ``x`` de shape
-        ``(n_amostras, window_size, n_sensores)``.
+        Tupla ``(x, y, engine_ids)`` com ``x`` de shape
+        ``(n_amostras, window_size, n_sensores)`` e um ID de motor por janela.
     """
     windows: list[np.ndarray] = []
     targets: list[int] = []
+    engine_ids: list[int] = []
     offset = 0
     for motor_id in data[id_column].unique():
         engine = data[data[id_column] == motor_id]
@@ -94,8 +96,9 @@ def time_window(
             end = start + window_size
             windows.append(engine.iloc[start:end, 2:].values)
             targets.append(rul[offset + end - 1])
+            engine_ids.append(int(motor_id))
         offset += len(engine)
-    return np.array(windows), np.array(targets)
+    return np.array(windows), np.array(targets), np.array(engine_ids)
 
 
 def create_fd001_windowed_features(
@@ -126,15 +129,16 @@ def create_fd001_windowed_features(
     features_train, features_test, fitted_scaler = scale_sensor_features(
         train, test, scaler=scaler
     )
-    x_train, y_train = time_window(
+    x_train, y_train, train_window_engine_ids = time_window(
         features_train, rul_train, window_size, step
     )
-    x_test, y_test = time_window(features_test, rul_test, window_size, step)
+    x_test, y_test, _ = time_window(features_test, rul_test, window_size, step)
     return FD001WindowedFeatures(
         x_train=x_train,
         y_train=y_train,
         x_test=x_test,
         y_test=y_test,
+        train_window_engine_ids=train_window_engine_ids,
         scaler=fitted_scaler,
         features_train=features_train,
         features_test=features_test,
