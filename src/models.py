@@ -513,6 +513,16 @@ def create_search_callbacks(
     ]
 
 
+def _weights_checkpoint_path(checkpoint_path: str | Path) -> Path:
+    """Normaliza caminho legado ``*.h5`` para ``*.weights.h5`` (Keras weights-only)."""
+    path = Path(checkpoint_path)
+    if path.name.endswith(".weights.h5"):
+        return path
+    if path.suffix == ".h5":
+        return path.with_name(f"{path.stem}.weights.h5")
+    return path.with_suffix(".weights.h5")
+
+
 def create_training_callbacks(
     checkpoint_path: str | Path,
     monitor: str = "val_loss",
@@ -528,6 +538,7 @@ def create_training_callbacks(
     Returns:
         Lista de callbacks para ``model.fit``.
     """
+    weights_path = _weights_checkpoint_path(checkpoint_path)
     return [
         EarlyStopping(
             monitor=monitor,
@@ -536,7 +547,7 @@ def create_training_callbacks(
             min_delta=1e-3,
         ),
         ModelCheckpoint(
-            str(checkpoint_path),
+            str(weights_path),
             monitor=monitor,
             save_best_only=True,
             save_weights_only=True,
@@ -840,6 +851,7 @@ def run_repeated_train_eval(
         retornado por ``model.fit`` na primeira iteração quando
         ``capture_first_history=True``; caso contrário, ``None``.
     """
+    weights_path = _weights_checkpoint_path(checkpoint_path)
     callbacks = create_training_callbacks(checkpoint_path, patience=patience)
     rows: list[dict[str, Any]] = []
     first_history: Any | None = None
@@ -854,7 +866,7 @@ def run_repeated_train_eval(
             callbacks=callbacks,
             verbose=0,
         )
-        model.load_weights(checkpoint_path)
+        model.load_weights(weights_path)
         if iteration == 0 and capture_first_history:
             first_history = history
             save_training_history(
