@@ -1,6 +1,6 @@
 # Transformer architecture (FD001 encoder-only)
 
-Deep-dive notes for the model in `build_model_transformer` (`src/models.py`). **§2** covers **`d_model`** and multi-head sizing; **§3** covers sinusoidal positional encoding and how cycle order is handled in the recurrent baselines. Later sections (encoder blocks, self-attention, pooling) may be added here or live in the TCC draft.
+Deep-dive notes for the model in `build_model_transformer` (`src/models.py`). **§2** — **`d_model`** and multi-head sizing; **§3** — positional encoding vs LSTM/BiLSTM; **§5** — self-attention (weighted sum of values). Encoder blocks and pooling may be added in later sections.
 
 ---
 
@@ -131,6 +131,71 @@ h_t = \mathrm{LSTM}(x_t,\, h_{t-1},\, c_{t-1})
 
 ---
 
+## 5. Self-attention (inside the encoder block)
+
+Self-attention runs inside each `TransformerEncoderBlock` in `src/models.py`:
+
+```python
+attention = self.attention(inputs, inputs, training=training)
+```
+
+Query, key, and value all come from the **same** sequence **`(batch, 30, d_model)`** — that is **self-attention** (no decoder, no cross-attention to a second sequence).
+
+### 5.1 “For each timestep, a weighted sum of all value vectors”
+
+**Timestep** means **one cycle** in the window. After projection and positional encoding you have **30 timesteps**, each represented by a **`d_model`** vector.
+
+For every cycle, the layer builds three vectors from that cycle’s data (via learned linear maps):
+
+| Symbol | Role |
+|--------|------|
+| **Query (Q)** | “What am I looking for?” |
+| **Key (K)** | “What do I offer for matching?” |
+| **Value (V)** | “What information do I pass on if another cycle selects me?” |
+
+In self-attention, Q, K, and V are all derived from **the same 30 cycles**. The **value** at cycle \(s\) is \(v_s\): the content cycle \(s\) contributes when other cycles “listen” to it.
+
+**Core idea:** pick one cycle \(t\) (e.g. cycle 25). The layer does **not** leave that cycle’s vector unchanged in isolation. It **replaces** it with a **new** vector built as follows:
+
+1. Compare cycle \(t\)’s **query** to **every** cycle’s **key** (including \(t\)) → scores for “how relevant is cycle \(s\) when updating cycle \(t\)?”
+2. Turn scores into **weights** \(\alpha_{t,0}, \ldots, \alpha_{t,29}\) that are **non-negative** and **sum to 1** (softmax).
+3. **New vector at cycle \(t\)**:
+
+\[
+\text{new}_t = \alpha_{t,0}\, v_0 + \alpha_{t,1}\, v_1 + \cdots + \alpha_{t,29}\, v_{29}
+\]
+
+So at cycle \(t\) the output is a **blend of all 30 value vectors**. If \(\alpha_{t,28}\) is large, the representation at \(t\) depends strongly on cycle 28; if \(\alpha_{t,5}\) is small, cycle 5 contributes little.
+
+**“For each timestep”** means this procedure runs for **every** \(t \in \{0,\ldots,29\}\). Each cycle can use **different** weights over the same 30 values, so cycle 10 and cycle 29 can “look at” the window differently.
+
+**One-line summary:** for **each** cycle, self-attention asks how much to copy from **every** cycle in the window, and sets that cycle’s new vector to that **weighted average of all value vectors**. Weights are **learned** (through Q/K projections and training), not fixed by hand.
+
+**RUL intuition (30 cycles, 17 sensors):** raw input at cycle 20 is mostly “sensors at cycle 20.” After one self-attention layer, the vector at cycle 20 can encode “sensors at 20 **plus** weighted evidence from other cycles” (e.g. a trend over 15–19, or the last cycles if the model learns that). That mixing **is** the weighted sum of values.
+
+### 5.2 Tiny numeric example (3 cycles, scalar values)
+
+Suppose there are only **3** cycles and value scalars \(v_0=1\), \(v_1=10\), \(v_2=100\). For cycle \(t=2\), imagine softmax weights \(0.1\) on cycle 0, \(0.2\) on cycle 1, \(0.7\) on cycle 2:
+
+\[
+\text{new}_2 = 0.1 \cdot 1 + 0.2 \cdot 10 + 0.7 \cdot 100 = 73
+\]
+
+The representation at timestep 2 is **73**, not **100** — a **mix** driven by the attention weights. With **`d_model = 32`**, each \(v_s\) is a 32-D vector and the same formula holds **dimension-wise** in the combined linear algebra of Q/K/V (scaled dot-product attention in `MultiHeadAttention`).
+
+### 5.3 Contrast with one LSTM step (same window)
+
+- **LSTM at cycle 20:** updates state mainly from **\(x_{20}\)** and **\(h_{19}\)**; cycle 25 is not in the formula for \(h_{20}\) directly (only through earlier chained states).
+- **Self-attention at cycle 20:** cycle **25** can contribute **in one layer** with weight \(\alpha_{20,25}\).
+
+That is why attention is described as **global within the window**: any cycle can interact with any other cycle in a single block (your window uses **no causal mask**, so “future” cycles inside the 30-window are allowed — appropriate when the full 30-cycle history is observed at once).
+
+### 5.4 Where this sits in the block
+
+Attention output is dropped out, added to the block input (**residual**), and layer-normalized; then the feed-forward sublayer runs **per timestep**. See `TransformerEncoderBlock.call` in `src/models.py`. Multi-head details (parallel Q/K/V subspaces) are in **§2.3**.
+
+---
+
 ## Other sections
 
-Encoder blocks, self-attention, `GlobalAveragePooling1D`, and end-to-end data flow: project chat / TCC draft. Implementation summary: `src/modifications/transformer-model.md` and `readme.md` §6.
+Encoder block overview (residual + FFN), `GlobalAveragePooling1D`, and end-to-end data flow: TCC draft or future additions here. Implementation summary: `src/modifications/transformer-model.md` and `readme.md` §6.
