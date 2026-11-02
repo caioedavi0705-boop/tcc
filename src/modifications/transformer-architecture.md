@@ -1,6 +1,6 @@
 # Transformer architecture (FD001 encoder-only)
 
-Deep-dive notes for the model in `build_model_transformer` (`src/models.py`). Sections 3–7 cover positional encoding, encoder blocks, self-attention, and pooling; this file keeps **§2 (d_model)** complete because §2.3 clarifies multi-head sizing.
+Deep-dive notes for the model in `build_model_transformer` (`src/models.py`). **§2** covers **`d_model`** and multi-head sizing; **§3** covers sinusoidal positional encoding and how cycle order is handled in the recurrent baselines. Later sections (encoder blocks, self-attention, pooling) may be added here or live in the TCC draft.
 
 ---
 
@@ -86,6 +86,51 @@ Larger **`d_model`** increases parameters in projection, attention, and FFN, whi
 
 ---
 
+## 3. Sinusoidal positional encoding and cycle index
+
+### 3.1 Role in the Transformer
+
+Self-attention is **permutation-equivariant** over timesteps unless the model knows **where** each cycle sits in the window. After `Dense(d_model)`, every cycle is a **`d_model`** vector built only from **that cycle’s 17 sensors** (same projection weights at all timesteps). `SinusoidalPositionalEncoding` adds a **fixed**, **non-learned** vector that depends on index **`pos ∈ {0, …, 29}`** inside the window:
+
+```python
+return inputs + encoding  # element-wise; sin/cos by dimension (see models.py)
+```
+
+That marks **absolute position within the 30-cycle snippet**, not a separate “cycle ID” feature in the raw data. Attention can then use both **sensor patterns** and **when** they occurred in the window.
+
+### 3.2 Comparison with LSTM and BiLSTM (positional tracking)
+
+The LSTM and BiLSTM in `build_model_lstm` / `build_model_bilstm` use the **same inputs**: **`(30, 17)`** windows from `src/features.py`, with **no** extra channel for cycle index and **no** positional encoding layer. Cycle order is handled differently—not by an explicit PE-like signal, but by **recurrence**.
+
+**Unidirectional LSTM**
+
+Keras consumes timesteps in order **0 → 29**. Each step updates hidden and cell state:
+
+\[
+h_t = \mathrm{LSTM}(x_t,\, h_{t-1},\, c_{t-1})
+\]
+
+“Which index we are in the window” is **implicit**: it is not added as a vector, but encoded in **how many recurrent steps have run** and **what is stored in \(h_t\)** after seeing cycles \(0…t\). On the **last** LSTM layer, `return_sequences=False`, so the regression head uses **one** vector—the state after the full forward pass—rather than 30 explicit position-tagged vectors like the Transformer encoder output before pooling.
+
+**Bidirectional LSTM**
+
+`Bidirectional(LSTM(...))` runs a **forward** LSTM (0 → 29) and a **backward** LSTM (29 → 0), then **concatenates** the two outputs. Each direction still respects **processing order**; the backward pass also carries **distance-from-the-end-of-the-window** information. That is richer positional context than a single LSTM, but still **learned recurrent mixing**, not a fixed sin/cos map of index \(t\).
+
+**Side-by-side (this project)**
+
+| Aspect | Transformer | LSTM / BiLSTM |
+|--------|-------------|---------------|
+| Explicit cycle index in inputs | Yes — sinusoidal PE on projected vectors | No |
+| How order enters the model | Full window self-attention; PE labels **index in window** | **Sequential** state updates (two directions in BiLSTM) |
+| Where “position” mainly lives | **Input representation** (projection + PE) before attention | **Hidden state evolution** over time |
+| Representation before the RUL head | **30** context vectors → `GlobalAveragePooling1D` | Typically **one** summary vector (final LSTM / BiLSTM states) |
+
+**Same inputs, fair comparison:** all three models see identical **`(30, 17)`** tensors. You did **not** concatenate a normalized cycle number or sin/cos index to the 17 sensors for the RNNs—that would be the closest analogue to PE for recurrent models; omitting it keeps the comparison focused on **architecture**, not extra positional features for one family only.
+
+**Conceptual takeaway:** LSTM and BiLSTM **do** track progression through the window, but through **step order and recurrent memory**, not a mechanism **equivalent** to `SinusoidalPositionalEncoding`. The Transformer makes **position explicit and fixed** in the representation; RNNs make it **implicit and learned** in the state dynamics.
+
+---
+
 ## Other sections
 
-For positional encoding (`SinusoidalPositionalEncoding`), encoder blocks, self-attention, `GlobalAveragePooling1D`, and end-to-end data flow, see the project chat / TCC draft built from the same architecture walkthrough. Implementation summary: `src/modifications/transformer-model.md` and `readme.md` §6.
+Encoder blocks, self-attention, `GlobalAveragePooling1D`, and end-to-end data flow: project chat / TCC draft. Implementation summary: `src/modifications/transformer-model.md` and `readme.md` §6.
