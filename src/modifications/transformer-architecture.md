@@ -1,6 +1,6 @@
 # Transformer architecture (FD001 encoder-only)
 
-Deep-dive notes for the model in `build_model_transformer` (`src/models.py`). **§2** — **`d_model`** and multi-head sizing; **§3** — positional encoding vs LSTM/BiLSTM; **§5** — self-attention (weighted sum of values). Encoder blocks and pooling may be added in later sections.
+Deep-dive notes for the model in `build_model_transformer` (`src/models.py`). **§2** — **`d_model`** and multi-head sizing; **§3** — sinusoidal PE (implementation, math, Vaswani formula, relative position) vs LSTM/BiLSTM; **§5** — self-attention (weighted sum of values). Encoder blocks and pooling may be added in later sections.
 
 ---
 
@@ -90,44 +90,156 @@ Larger **`d_model`** increases parameters in projection, attention, and FFN, whi
 
 ### 3.1 Role in the Transformer
 
-Self-attention is **permutation-equivariant** over timesteps unless the model knows **where** each cycle sits in the window. After `Dense(d_model)`, every cycle is a **`d_model`** vector built only from **that cycle’s 17 sensors** (same projection weights at all timesteps). `SinusoidalPositionalEncoding` adds a **fixed**, **non-learned** vector that depends on index **`pos ∈ {0, …, 29}`** inside the window:
+Self-attention is **permutation-equivariant** over timesteps unless the model knows **where** each cycle sits in the window. After `Dense(d_model)`, every cycle is a **`d_model`** vector built only from **that cycle’s 17 sensors** (same projection weights at all timesteps). `SinusoidalPositionalEncoding` adds a **fixed**, **non-learned** vector that depends on index **`pos ∈ {0, …, 29}`** inside the window.
+
+That marks **absolute position within the 30-cycle snippet**, not NASA’s global engine cycle counter as a separate raw feature (unless that information is already reflected in the sensors). Attention can then use both **sensor patterns** and **when** they occurred in the window.
+
+**What PE is not (this project):**
+
+- Not learned (no trainable weights in the PE layer).
+- Not an extra 18th sensor column — it is added in **`d_model`** space after the 17→`d_model` projection.
+- Not used in LSTM/BiLSTM (see **§3.5**).
+
+### 3.2 Implementation: `SinusoidalPositionalEncoding.call`
+
+In Keras, custom layers implement **`call(...)`** for the forward pass. Source: `src/models.py`.
 
 ```python
-return inputs + encoding  # element-wise; sin/cos by dimension (see models.py)
+def call(self, inputs, training=None):
+    seq_len = ops.shape(inputs)[1]
+    d_model = ops.shape(inputs)[2]
+    position = ops.cast(ops.arange(seq_len)[:, None], inputs.dtype)
+    dimension = ops.cast(ops.arange(d_model)[None, :], inputs.dtype)
+    depth = ops.cast(d_model, inputs.dtype)
+    angles = position / ops.power(10000.0, (2 * (dimension // 2)) / depth)
+    even = ops.equal(ops.cast(dimension, "int32") % 2, 0)
+    encoding = ops.where(even, ops.sin(angles), ops.cos(angles))
+    return inputs + encoding
 ```
 
-That marks **absolute position within the 30-cycle snippet**, not a separate “cycle ID” feature in the raw data. Attention can then use both **sensor patterns** and **when** they occurred in the window.
+**Input shape:** `inputs` is **`(batch, 30, d_model)`**. Positional encoding is **identical for every sample** in the batch; only **`pos`** along the window changes.
 
-### 3.2 Comparison with LSTM and BiLSTM (positional tracking)
+| Line / variable | Shape (typical) | Meaning |
+|-----------------|-----------------|---------|
+| `seq_len` | scalar **30** | Window length (time axis). |
+| `d_model` | scalar **32** (or 64/128) | Channels per cycle after projection. |
+| `position` | **(30, 1)** | Window index **0…29** (`[:, None]` = column for broadcasting). |
+| `dimension` | **(1, d_model)** | Channel index **0…d_model−1**. |
+| `depth` | scalar | Same numeric value as **`d_model`**; used in the wavelength exponent. |
+| `angles` | **(30, d_model)** | Angle fed to sin/cos for each **(pos, channel)** pair. |
+| `even` | **(1, d_model)** | True for even channel indices → use **sin**; odd → **cos**. |
+| `encoding` | **(30, d_model)** | Fixed positional matrix. |
+| `return inputs + encoding` | **(batch, 30, d_model)** | Element-wise add: projected sensors + position fingerprint per cycle. |
 
-The LSTM and BiLSTM in `build_model_lstm` / `build_model_bilstm` use the **same inputs**: **`(30, 17)`** windows from `src/features.py`, with **no** extra channel for cycle index and **no** positional encoding layer. Cycle order is handled differently—not by an explicit PE-like signal, but by **recurrence**.
+**`training=None`:** unused here (no dropout); Keras still passes it.
+
+**Python `//` in this layer:** **`dimension // 2`** is **integer (floor) division**, not a comment. Examples: `0//2=0`, `1//2=0`, `2//2=1`, `3//2=1`. It assigns dimension pairs **(0,1), (2,3), …** to the same wavelength index **k**. Elsewhere in the project, **`d_model // num_heads`** is the same operator (e.g. `32 // 2 → 16`).
+
+### 3.3 Mathematics: angles, sin/cos pairs, and addition
+
+**Paper definition (Vaswani et al., *Attention Is All You Need*, 2017).** For dimension pair index **i** (i = 0, 1, …, d_model/2 − 1) and position **pos**:
+
+\[
+PE_{(pos,\, 2i)}   = \sin\!\left(\frac{pos}{10000^{2i/d_{\text{model}}}}\right), \qquad
+PE_{(pos,\, 2i+1)} = \cos\!\left(\frac{pos}{10000^{2i/d_{\text{model}}}}\right)
+\]
+
+Same angle for the sin/cos pair; your code uses **`k = dimension // 2`** instead of **i**, and **`depth`** instead of **`d_model`** in code.
+
+**Wavelength and frequency form.** Define:
+
+\[
+\lambda_i = 10000^{\,2i/d_{\text{model}}}, \qquad
+\text{angle}(pos, i) = \frac{pos}{\lambda_i} = pos \cdot \omega_i, \quad \omega_i = \frac{1}{10000^{2i/d_{\text{model}}}}
+\]
+
+Your implementation computes `angles = position / 10000**((2 * (dimension // 2)) / depth)`, i.e. **`pos / λ_k`** with **k = dimension // 2**.
+
+**Why several frequencies?** Small **i** (small **λ**): encoding changes quickly as **pos** increases (fine resolution). Large **i** (large **λ**): slow change along the window (coarse resolution). Each position vector mixes many scales.
+
+**Tiny example (`d_model = 4`, three positions).** Pairs (dim 0,1) use **λ₀ = 1**; (dim 2,3) use **λ₁ = 10000^(2/4) = 100**.
+
+| pos | dim 0 (sin) | dim 1 (cos) | dim 2 (sin pos/100) | dim 3 (cos) |
+|-----|-------------|-------------|---------------------|-------------|
+| 0 | 0 | 1 | 0 | 1 |
+| 1 | sin(1) | cos(1) | sin(0.01)≈0.01 | cos(0.01)≈1 |
+| 2 | sin(2) | cos(2) | sin(0.02) | cos(0.02) |
+
+Row **pos** is the vector **added** to the projected representation of cycle **pos** in the window.
+
+**Why add to `inputs`?** Similar sensor readings at different cycles would yield similar projected vectors; **adding** PE shifts them differently so self-attention can distinguish **“same sensors, different index in the window.”**
+
+### 3.4 Origin of the formula, base 10000, and relative position
+
+**Where ωₖ comes from.** The frequency/wavelength law is **not** derived from C-MAPSS or RUL physics. It is the **positional encoding scheme from Vaswani et al. (2017)** — an architectural choice so that:
+
+1. **Absolute** index **pos** is encoded without extra learned parameters.
+2. **Sin/cos pairs** at multiple wavelengths mix **fine** and **coarse** position scales in one vector.
+3. For a fixed offset **k**, **PE(pos + k)** can be written as a **linear function** of **PE(pos)** (trigonometric addition formulas), which helps models represent **relative** offsets, not only absolute indices.
+
+**Why base 10000?** In the original paper with **`d_model = 512`**, **λ₀ = 1** and the largest **λ** is on the order of **10⁴**, so the slowest dimensions vary little over typical sentence lengths but still differ over very long ranges. **10000** is a **hyperparameter of the encoding**, not a fitted constant. This project keeps the same formula for **`d_model ∈ {32, 64, 128}`** (fewer sin/cos pairs when **d_model** is small; exponents **2i/d_model** still geometrically space wavelengths across pairs).
+
+**Relative position hint (dot products).** **Absolute** position: “cycle **7** in the window.” **Relative** position: “these two cycles are **k** steps apart.” RUL patterns often depend on **lags** (e.g. trend over the last few cycles).
+
+Each **pos** has a vector **PE(pos)**. The dot product **PE(pos) · PE(pos + k)** measures how aligned two position vectors are. With sinusoids at multiple frequencies, that alignment can depend strongly on **k** (the gap), not only on **pos** — so the geometry encodes **distance in the window**, not only “where on the line.”
+
+**Link to self-attention (qualitative).** Queries and keys are built from **projected sensors + PE** through learned layers. Attention scores involve **q · k**, so position can influence which cycles match. The model **learns** whether to use lag-like patterns; PE supplies a **standard inductive bias** toward relative offsets. It is **not** guaranteed that every head implements literal “look k cycles back” — that is learned behavior aided by this encoding.
+
+**One-sentence summary:** Sinusoidal PE from Vaswani et al. uses **pos / 10000^(2i/d_model)** so each index gets a fixed fingerprint and pairwise comparisons can emphasize **separation k**; your **`call`** implements the same angles and adds them to projected cycle vectors.
+
+**TCC citation:** Vaswani et al. (2017), positional encoding (Section 3.5 in the paper).
+
+### 3.5 Comparison with LSTM and BiLSTM (positional tracking)
+
+The LSTM and BiLSTM in `build_model_lstm` / `build_model_bilstm` use the **same inputs**: **`(30, 17)`** windows from `src/features.py`, with **no** extra channel for cycle index and **no** `SinusoidalPositionalEncoding` layer. Cycle order is handled by **recurrence**, not by a fixed sin/cos map added to features.
 
 **Unidirectional LSTM**
 
-Keras consumes timesteps in order **0 → 29**. Each step updates hidden and cell state:
+Keras feeds timesteps in order **0 → 29**. Each step updates hidden and cell state:
 
 \[
 h_t = \mathrm{LSTM}(x_t,\, h_{t-1},\, c_{t-1})
 \]
 
-“Which index we are in the window” is **implicit**: it is not added as a vector, but encoded in **how many recurrent steps have run** and **what is stored in \(h_t\)** after seeing cycles \(0…t\). On the **last** LSTM layer, `return_sequences=False`, so the regression head uses **one** vector—the state after the full forward pass—rather than 30 explicit position-tagged vectors like the Transformer encoder output before pooling.
+| Symbol | Meaning |
+|--------|---------|
+| **\(x_t\)** | Scaled **17** sensor values at cycle **t** in the window. |
+| **\(h_{t-1}\)** | Hidden state after cycle **t − 1** (compressed past). |
+| **\(c_{t-1}\)** | Cell state (longer internal memory). |
+| **\(h_t\)** | New summary after observing cycle **t**. |
+
+“Which index we are in the window” is **implicit**: the same **\(x_t\)** at a different step would produce a different **\(h_t\)** because **\(h_{t-1}\)** differs. There is no **`call`** that adds **PE(pos)** to **\(x_t\)**.
+
+On the **last** LSTM layer, **`return_sequences=False`**, so the RUL head uses **one** vector (state after cycle **29**), not **30** position-tagged vectors like the Transformer encoder before pooling.
 
 **Bidirectional LSTM**
 
-`Bidirectional(LSTM(...))` runs a **forward** LSTM (0 → 29) and a **backward** LSTM (29 → 0), then **concatenates** the two outputs. Each direction still respects **processing order**; the backward pass also carries **distance-from-the-end-of-the-window** information. That is richer positional context than a single LSTM, but still **learned recurrent mixing**, not a fixed sin/cos map of index \(t\).
+`Bidirectional(LSTM(...))` runs:
+
+1. **Forward** LSTM: **0 → 29**.
+2. **Backward** LSTM: **29 → 0** on the same **`(30, 17)`** sequence.
+
+Keras **concatenates** the two outputs (e.g. forward and backward hidden sizes sum on the feature axis). That adds **distance from window start** and **distance from window end**, but still via **learned gates and states**, not **`SinusoidalPositionalEncoding.call`**.
 
 **Side-by-side (this project)**
 
 | Aspect | Transformer | LSTM / BiLSTM |
 |--------|-------------|---------------|
-| Explicit cycle index in inputs | Yes — sinusoidal PE on projected vectors | No |
-| How order enters the model | Full window self-attention; PE labels **index in window** | **Sequential** state updates (two directions in BiLSTM) |
-| Where “position” mainly lives | **Input representation** (projection + PE) before attention | **Hidden state evolution** over time |
-| Representation before the RUL head | **30** context vectors → `GlobalAveragePooling1D` | Typically **one** summary vector (final LSTM / BiLSTM states) |
+| Explicit cycle index in inputs | Yes — sinusoidal PE on projected vectors (**§3.2–3.4**) | No |
+| How order enters the model | Self-attention + PE labels **index in window** | **Sequential** state updates (two directions in BiLSTM) |
+| Where “position” mainly lives | **Input representation** (projection + PE) | **Hidden state evolution** over time |
+| Representation before the RUL head | **30** vectors → `GlobalAveragePooling1D` | Typically **one** summary vector (final LSTM / BiLSTM states) |
 
-**Same inputs, fair comparison:** all three models see identical **`(30, 17)`** tensors. You did **not** concatenate a normalized cycle number or sin/cos index to the 17 sensors for the RNNs—that would be the closest analogue to PE for recurrent models; omitting it keeps the comparison focused on **architecture**, not extra positional features for one family only.
+**Same inputs, fair comparison:** all three models see identical **`(30, 17)`** tensors. You did **not** concatenate a normalized cycle index or sin/cos features to the **17** sensors for the RNNs (that would be the closest PE analogue for RNNs).
 
-**Conceptual takeaway:** LSTM and BiLSTM **do** track progression through the window, but through **step order and recurrent memory**, not a mechanism **equivalent** to `SinusoidalPositionalEncoding`. The Transformer makes **position explicit and fixed** in the representation; RNNs make it **implicit and learned** in the state dynamics.
+**Conceptual takeaway:** LSTM and BiLSTM **do** track progression through the window via **step order and memory**; the Transformer adds **explicit, fixed** position in **`d_model`** space before attention. Different mechanisms, same window tensor.
+
+**Section map**
+
+```text
+§3.2  SinusoidalPositionalEncoding.call  → build encoding[pos, :] → inputs + encoding
+§3.5  LSTM / BiLSTM                      → order via h_t chain (and two directions in BiLSTM)
+```
 
 ---
 
