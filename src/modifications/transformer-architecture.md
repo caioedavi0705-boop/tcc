@@ -285,24 +285,59 @@ So at cycle \(t\) the output is a **blend of all 30 value vectors**. If \(\alpha
 
 **RUL intuition (30 cycles, 17 sensors):** raw input at cycle 20 is mostly “sensors at cycle 20.” After one self-attention layer, the vector at cycle 20 can encode “sensors at 20 **plus** weighted evidence from other cycles” (e.g. a trend over 15–19, or the last cycles if the model learns that). That mixing **is** the weighted sum of values.
 
-### 5.2 Tiny numeric example (3 cycles, scalar values)
+### 5.2 Scores, scaling by \(\sqrt{d_k}\), the attention matrix, and \(\alpha_{t,s}\)
 
-Suppose there are only **3** cycles and value scalars \(v_0=1\), \(v_1=10\), \(v_2=100\). For cycle \(t=2\), imagine softmax weights \(0.1\) on cycle 0, \(0.2\) on cycle 1, \(0.7\) on cycle 2:
+**Step 1 — raw compatibility (score).** For one head, with query vector \(q_t\) and key vector \(k_s\) (both length **`d_k`**, e.g. **`d_k = 16`** when **`d_model = 32`** and **2 heads**):
+
+\[
+e_{t,s} = \frac{q_t \cdot k_s}{\sqrt{d_k}}
+\]
+
+**\(e_{t,s}\)** is the **score** (logit): “how well does key at cycle **s** match query at cycle **t**?” before normalization.
+
+**Why divide by \(\sqrt{d_k}\)?** The dot product **adds** **`d_k`** terms: \(q_t \cdot k_s = \sum_{j=1}^{d_k} q_{t,j}\, k_{s,j}\). If those terms are roughly order **1** on average, their **sum** tends to grow with **`d_k`** (roughly like **\(\mathcal{O}(\sqrt{d_k})\)** to **\(\mathcal{O}(d_k)\)** in magnitude depending on correlations). **Large scores** make **softmax** extremely **peaky** (one weight ≈ **1**, all others ≈ **0**), so small changes in inputs barely change the output — **gradients** during training can **vanish**. Dividing by **\(\sqrt{d_k}\)** **rescales** scores so their typical size stays **stable** when you change head width (same trick as in Vaswani et al.; Keras `MultiHeadAttention` uses it internally). Intuition: you are **counteracting** summing **`d_k`** products so softmax sees **moderate** logits, not giants that grow automatically with **`key_dim`**.
+
+**Step 2 — attention weights.** For a **fixed** query cycle **t**, softmax runs over all source cycles **s**:
+
+\[
+\alpha_{t,s} = \frac{\exp(e_{t,s})}{\sum_{s'=0}^{29} \exp(e_{t,s'})}
+\]
+
+**Properties:** every **\(\alpha_{t,s} \geq 0\)** and **\(\sum_s \alpha_{t,s} = 1\)** for each **t**. So for cycle **t**, the **\(\alpha_{t,\cdot}\)** row is a **probability distribution** over “which cycles to listen to.”
+
+**What a high \(\alpha_{t,s}\) means.** Fix **t** (the cycle being **updated**). **Large \(\alpha_{t,s}\)** means: when building the new representation at cycle **t**, the layer takes a **large fraction** of its information from the **value vector** **\(v_s\)** at cycle **s**. In words: **“cycle t is strongly attending to cycle s.”** It does **not** by itself mean “s caused t” in a physical sense — it is what **learned** Q/K matching chose for this window. If **\(\alpha_{t,s}\)** is high, other weights **\(\alpha_{t,s'}\)** in the same row must be smaller because the row sums to **1**. Low **\(\alpha_{t,s}\)** means cycle **s** contributes little to **t**’s new vector.
+
+**Output (same as §5.1):** \(\text{new}_t = \sum_s \alpha_{t,s}\, v_s\).
+
+**Attention matrix — scores or weights?** For one head, both are **30 × 30** tables (one row per query cycle **t**, one column per key/source cycle **s**):
+
+| Matrix | Entry | Name | Typical use |
+|--------|--------|------|-------------|
+| **Pre-softmax** | **\(e_{t,s}\)** | **Scores** (scaled dot products) | Debugging; can be any real number |
+| **Post-softmax** | **\(\alpha_{t,s}\)** | **Attention weights** | Weighted sum of values; heatmaps / interpretability |
+
+People say “attention matrix” for **either**; in papers and plots it usually means **\(\alpha\)** (weights). Implementation order: **scores → softmax (row-wise over s) → weights → multiply/add values**. Your code calls `MultiHeadAttention` once; that bundle happens inside the layer.
+
+**Multi-head note:** each head has its own **\(e^{(h)}\)** and **\(\alpha^{(h)}\)**; head outputs are concatenated back to **`d_model`** (§2.3).
+
+### 5.3 Tiny numeric example (3 cycles, scalar values)
+
+Suppose there are only **3** cycles and value scalars \(v_0=1\), \(v_1=10\), \(v_2=100\). For cycle \(t=2\), imagine softmax weights \(\alpha_{2,0}=0.1\), \(\alpha_{2,1}=0.2\), \(\alpha_{2,2}=0.7\) (these are **\(\alpha\)**, not raw scores):
 
 \[
 \text{new}_2 = 0.1 \cdot 1 + 0.2 \cdot 10 + 0.7 \cdot 100 = 73
 \]
 
-The representation at timestep 2 is **73**, not **100** — a **mix** driven by the attention weights. With **`d_model = 32`**, each \(v_s\) is a 32-D vector and the same formula holds **dimension-wise** in the combined linear algebra of Q/K/V (scaled dot-product attention in `MultiHeadAttention`).
+The representation at timestep 2 is **73**, not **100** — a **mix** driven by the attention weights. High **\(\alpha_{2,2}=0.7\)** means cycle 2’s output is mostly built from its **own** value **\(v_2\)**, with smaller pulls from cycles 0 and 1. With **`d_model = 32`**, each \(v_s\) is a 32-D vector; the same weighted-sum logic runs inside `MultiHeadAttention` with **§5.2** scores and scaling.
 
-### 5.3 Contrast with one LSTM step (same window)
+### 5.4 Contrast with one LSTM step (same window)
 
 - **LSTM at cycle 20:** updates state mainly from **\(x_{20}\)** and **\(h_{19}\)**; cycle 25 is not in the formula for \(h_{20}\) directly (only through earlier chained states).
 - **Self-attention at cycle 20:** cycle **25** can contribute **in one layer** with weight \(\alpha_{20,25}\).
 
 That is why attention is described as **global within the window**: any cycle can interact with any other cycle in a single block (your window uses **no causal mask**, so “future” cycles inside the 30-window are allowed — appropriate when the full 30-cycle history is observed at once).
 
-### 5.4 Where this sits in the block
+### 5.5 Where this sits in the block
 
 Attention output is dropped out, added to the block input (**residual**), and layer-normalized; then the feed-forward sublayer runs **per timestep**. See `TransformerEncoderBlock.call` in `src/models.py`. Multi-head details (parallel Q/K/V subspaces) are in **§2.3**.
 
