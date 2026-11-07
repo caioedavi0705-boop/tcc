@@ -22,3 +22,10 @@ build/
 # Jupyter
 .ipynb_checkpoints/
 *.nbconvert.ipynb
+
+# Local helper scripts (not part of the tracked pipeline; notebooks + src/*.py modules only)
+src/rerun_history_fit.py
+src/rerun_repeated_eval.py
+src/run_wilcoxon_comparison.py
+src/write_comparison_2.py
+src/wait_eval_then_wilcoxon.py

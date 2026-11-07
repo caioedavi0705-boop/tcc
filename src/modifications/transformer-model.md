@@ -60,11 +60,9 @@ Legacy `transformer_model_first_history.json` (from old `capture_first_history=T
 
 ## Comparison
 
-- **`src/comparacao_wilcoxon.ipynb`** — loads LSTM, BiLSTM, and Transformer CSVs; Wilcoxon signed-rank at α = 0.05 (pairs: LSTM–BiLSTM, LSTM–Transformer, BiLSTM–Transformer).
-- **`src/run_wilcoxon_comparison.py`** — same logic from the CLI; `--write-md` updates **`output/comparison_2.md`**.
-- **`src/rerun_repeated_eval.py`** — reruns 10× eval for all three models (engine split, current callbacks) without re-running Hyperband.
+Run **`src/comparacao_wilcoxon.ipynb`** after the three model notebooks. It loads the CSVs and runs Wilcoxon signed-rank at α = 0.05 (pairs: LSTM–BiLSTM, LSTM–Transformer, BiLSTM–Transformer). Summaries live under **`output/`** (e.g. `comparison_1.md`, `comparison_2.md`).
 
-**Comparison 1** (`output/comparison_1.md`) used random window validation and older callbacks; **Comparison 2** reflects the engine split and callback changes — metrics are **not directly comparable** across those reports.
+**Comparison 1** used random window validation and older callbacks; **Comparison 2** reflects the engine split and callback changes — metrics are **not directly comparable** across those reports.
 
 ## Related docs
 
