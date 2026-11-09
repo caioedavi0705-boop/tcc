@@ -339,7 +339,26 @@ That is why attention is described as **global within the window**: any cycle ca
 
 ### 5.5 Where this sits in the block
 
-Attention output is dropped out, added to the block input (**residual**), and layer-normalized; then the feed-forward sublayer runs **per timestep**. See `TransformerEncoderBlock.call` in `src/models.py`. Multi-head details (parallel Q/K/V subspaces) are in **§2.3**.
+Attention output is dropped out, added to the block input (**residual**), and layer-normalized; then the feed-forward sublayer runs **per timestep**. See `TransformerEncoderBlock.call` in `src/models.py`. Per-head Q/K/V projection (not a channel split) is in **§2.3**.
+
+### 5.6 Summary: multi-head attention and learned head roles
+
+**“Heads are not manually assigned.”** The model never fixes roles such as “head 1 = local trends, head 2 = end of window.” Each head has its **own learned** maps \(W^Q, W^K, W^V\) into **`key_dim`** (§2.3). Training on RUL updates those weights; if one head favors neighbors and another favors distant cycles, that **emerges from data**, not from hand-written rules.
+
+**Why several heads in one layer?**
+
+| Idea | Role in this project |
+|------|----------------------|
+| **Parallel views of the window** | Several attentions run **at once** on the same 30 cycles, each in a different subspace, then concatenate back to **`d_model`**. Each cycle’s vector can reflect **multiple cycle–cycle patterns** in **one** encoder block. |
+| **Depth vs heads** | **Depth** = stacking **encoder blocks** (e.g. 2 in the tuned model). **Heads** add **breadth** (diverse attention maps per layer), not extra layers. |
+| **Speed** | Multi-head **does not** make attention faster. It usually **increases** compute (H attentions + merge). Parallelism on GPU is throughput, not fewer training steps or a smaller model. |
+
+**Main reasons (Vaswani-style motivation):**
+
+1. **Capacity as parallel specialists** — several smaller attentions can capture **different** match types (e.g. short lag vs early/late contrast) before merging.
+2. **Inductive bias** — one large dot-product is a single mixing pattern; multiple heads encourage **diverse** \(\alpha\) maps in the **same** layer.
+
+**One sentence:** Multi-head self-attention applies **parallel** scaled dot-product attentions over the window with **learned, not hand-defined** roles, then **concatenates** so each cycle mixes information through **several relationship patterns** at once; **depth** comes from **encoder blocks**, while **heads** widen **per-layer** expressiveness, **not** training speed.
 
 ---
 
