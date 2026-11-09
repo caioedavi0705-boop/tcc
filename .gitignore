@@ -29,3 +29,4 @@ src/rerun_repeated_eval.py
 src/run_wilcoxon_comparison.py
 src/write_comparison_2.py
 src/wait_eval_then_wilcoxon.py
+src/run_comparison_3.py
