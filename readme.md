@@ -47,44 +47,7 @@ Typical flow: load from `data/raw/` via `src/data.py` → build windows with `sr
 
 ---
 
-## 2. Theoretical Background & Mathematical Formulation
-
-### 2.1 Long Short-Term Memory (LSTM)
-LSTM networks address the vanishing/exploding gradient problems inherent in standard Recurrent Neural Networks (RNNs) through a gating mechanism that controls information flow over long sequences.
-
-For time step $t$, input vector $x_t$, previous hidden state $h_{t-1}$, and previous cell state $C_{t-1}$:
-
-1. **Input Gate ($i_t$):** Controls how much new information enters the cell state.
-   $$i_t = \sigma(W_{xi} x_t + W_{hi} h_{t-1} + b_i)$$
-
-2. **Forget Gate ($f_t$):** Determines what information to discard from the previous cell state.
-   $$f_t = \sigma(W_{xf} x_t + W_{hf} h_{t-1} + b_f)$$
-
-3. **Candidate Cell State ($\tilde{C}_t$):** Generates new candidate values.
-   $$\tilde{C}_t = \tanh(W_{xc} x_t + W_{hc} h_{t-1} + b_c)$$
-
-4. **Cell State Update ($C_t$):** Combines forgotten past information and weighted new input information.
-   $$C_t = f_t \odot C_{t-1} + i_t \odot \tilde{C}_t$$
-
-5. **Output Gate ($o_t$):** Decides the next hidden state.
-   $$o_t = \sigma(W_{xo} x_t + W_{ho} h_{t-1} + b_o)$$
-
-6. **Hidden State Update ($h_t$):**
-   $$h_t = o_t \odot \tanh(C_t)$$
-
-*Note:* $\sigma$ represents the Sigmoid activation function, and $\odot$ denotes element-wise Hadamard multiplication.
-
-### 2.2 Bidirectional LSTM (BiLSTM)
-The BiLSTM processes temporal sequences using two separate LSTM layers:
-- **Forward Layer ($\vec{h}_t$):** Reads inputs from past to future ($t = 1 \rightarrow T$).
-- **Backward Layer ($\overleftarrow{h}_t$):** Reads inputs from future to past ($t = T \rightarrow 1$).
-
-The combined output layer aggregates representations from both temporal directions:
-$$h_t = [\vec{h}_t, \overleftarrow{h}_t]$$
-
----
-
-## 3. Problem Formulation & Target Modeling
+## 2. Problem Formulation & Target Modeling
 
 The physical degradation of a turbofan engine is framed as a **time-series regression task**.
 
@@ -102,7 +65,7 @@ N_{\text{total}}^{(i)} - N(t), & \text{if } N_{\text{total}}^{(i)} - N(t) < 130
 
 ---
 
-## 4. Dataset Specification (NASA C-MAPSS - FD001)
+## 3. Dataset Specification (NASA C-MAPSS - FD001)
 
 - **Source:** NASA Commercial Modular Aero-Propulsion System Simulation (C-MAPSS).
 - **Subdataset:** **FD001**
@@ -113,7 +76,7 @@ N_{\text{total}}^{(i)} - N(t), & \text{if } N_{\text{total}}^{(i)} - N(t) < 130
 
 ---
 
-## 5. Preprocessing Pipeline
+## 4. Preprocessing Pipeline
 
 1. **Data Cleaning:** Removal of missing values or invalid entries (if present).
 2. **Feature Elimination:**
@@ -131,7 +94,7 @@ N_{\text{total}}^{(i)} - N(t), & \text{if } N_{\text{total}}^{(i)} - N(t) < 130
 
 ---
 
-## 6. Hyperparameter Tuning & Network Architectures
+## 5. Hyperparameter Tuning & Network Architectures
 
 Hyperparameter optimization was performed via **Hyperband** (`KerasTuner`) with `max_epochs=15`, `factor=3`, and one Hyperband iteration. Search training used **batch size 200** and **early stopping** on validation loss (patience 3). Objective minimized during search: validation **MAE** (`val_loss`).
 
@@ -159,7 +122,7 @@ Each encoder block is multi-head self-attention plus a ReLU feed-forward block, 
 
 ---
 
-## 7. Training & Validation Setup
+## 6. Training & Validation Setup
 
 - **Max Epochs:** 30
 - **Batch Size:** 200 samples
@@ -170,9 +133,9 @@ Each encoder block is multi-head self-attention plus a ReLU feed-forward block, 
 
 ---
 
-## 8. Evaluation Metrics & Statistical Testing
+## 7. Evaluation Metrics & Statistical Testing
 
-### 8.1 Performance Metrics
+### 7.1 Performance Metrics
 Given $n$ samples, ground-truth $y_i$, predicted $\hat{y}_i$, and ground-truth mean $\bar{y}$:
 
 - **Mean Squared Error (MSE):**
@@ -184,7 +147,7 @@ Given $n$ samples, ground-truth $y_i$, predicted $\hat{y}_i$, and ground-truth m
 - **Coefficient of Determination ($R^2$):**
   $$R^2 = 1 - \frac{\sum_{i=1}^{n}(y_i - \hat{y}_i)^2}{\sum_{i=1}^{n}(y_i - \bar{y})^2}$$
 
-### 8.2 Non-Parametric Statistical Inference
+### 7.2 Non-Parametric Statistical Inference
 To evaluate statistical significance between paired model runs without assuming normality, the **Wilcoxon Signed-Rank Test** is applied on paired metrics ($n = 10$):
 
 1. Compute paired differences $d_i = \text{Metric}_{\text{LSTM}}^{(i)} - \text{Metric}_{\text{BiLSTM}}^{(i)}$.
@@ -199,7 +162,7 @@ Pairwise Wilcoxon tests for all three models are reported in the latest `output/
 
 ---
 
-## 9. Experiment Comparison Reports (`output/`)
+## 8. Experiment Comparison Reports (`output/`)
 
 | Report | Summary |
 | --- | --- |
