@@ -1,6 +1,6 @@
 # Transformer architecture (FD001 encoder-only)
 
-Deep-dive notes for the model in `build_model_transformer` (`src/models.py`). **§2** — **`d_model`** and multi-head sizing; **§3** — sinusoidal PE (implementation, math, Vaswani formula, relative position) vs LSTM/BiLSTM; **§5** — self-attention (weighted sum of values). Encoder blocks and pooling may be added in later sections.
+Deep-dive notes for the model in `build_model_transformer` (`src/models.py`). **§2** — **`d_model`** and multi-head sizing; **§3** — sinusoidal PE; **§5** — self-attention; **§6** — `GlobalAveragePooling1D`. Encoder block overview (residual + FFN) may be added as **§4**.
 
 ---
 
@@ -362,6 +362,74 @@ Attention output is dropped out, added to the block input (**residual**), and la
 
 ---
 
+## 6. `GlobalAveragePooling1D`
+
+After the encoder stack, the tensor is still **`(batch, 30, d_model)`**: **30** context-rich vectors (one per cycle in the window). The RUL label, however, is **one scalar per window**. Pooling implements the **many-to-one** step before the regression head.
+
+In `build_model_transformer`:
+
+```python
+x = GlobalAveragePooling1D(name="pool")(x)
+```
+
+### 6.1 Operation and tensor shapes
+
+**GlobalAveragePooling1D** averages over the **time axis** (axis **1** in Keras layout **`(batch, steps, features)`**), **not** over the feature axis.
+
+For batch index **b**, cycle **t**, channel **j** (with **L = 30**, **d_model** channels):
+
+\[
+p_{b,j} = \frac{1}{L} \sum_{t=0}^{L-1} x_{b,t,j}
+\]
+
+| Stage | Shape | Meaning |
+|--------|--------|---------|
+| Encoder output | `(B, 30, d_model)` | Per-cycle representations after attention + FFN |
+| After `GlobalAveragePooling1D` | `(B, d_model)` | One summary vector per window |
+| Optional `Dense` (if tuned) | `(B, units)` | ReLU hidden head |
+| `Dense(1, linear)` | `(B, 1)` | Predicted RUL |
+
+Every cycle contributes **equally** at this layer: weight **\(1/L = 1/30\)** per timestep in the sum. There are **no learnable parameters** in the pooling layer itself.
+
+### 6.2 Role in the FD001 pipeline
+
+Each training example is a sliding window; the target is **RUL at the last cycle** of that window. The encoder has already **mixed information across cycles** via self-attention (§5). Pooling does **not** pick a single cycle; it **aggregates** all 30 contextualized vectors into one fixed-size vector **`p ∈ ℝ^{d_model}`**, which feeds:
+
+1. **0 or 1** optional `Dense(..., relu)` (`layers_dense` from Hyperband), then  
+2. **`Dense(1, linear)`** for RUL.
+
+So the pooling layer is the **bridge** between **sequence** processing and **scalar** regression—the same functional slot as the **final LSTM hidden state** in the recurrent baselines (§3.5), but built from an **explicit mean** over all timesteps instead of only the last recurrent step.
+
+### 6.3 Why global average (and not other poolings)
+
+| Method | What it does | In this project |
+|--------|----------------|-----------------|
+| **Global average pooling** | Mean over **t** for each channel | **Used** — parameter-free, stable |
+| **Last timestep only** | `x_{L-1,:}` | Not used; assumes the last vector already encodes the full window |
+| **[CLS] token** | Learned extra position | Not used; adds parameters and length |
+| **Global max pooling** | `max_t x_{t,j}` per channel | Not used; driven by spikes, ignores most cycles |
+| **Learned attention pooling** | Weights over **t** from data | Not used; extra layer |
+
+**Rationale here:** With **fixed L = 30**, mean pooling gives a **consistent** summary size **`d_model`** for every valid window. After attention, **many** timesteps may already carry global context; averaging **reduces sensitivity** to a single noisy cycle compared to taking one index only.
+
+**Limitation:** If the signal were **almost only** in the last few cycles, a uniform mean **dilutes** them with the other **27** positions. The model can partly compensate by making late-cycle vectors **carry more useful mass** in attention, and the optional dense head can **recombine** channels—but the **inductive bias** at pooling is still **equal weight per cycle**.
+
+### 6.4 Comparison with LSTM / BiLSTM head input
+
+| | Transformer (this code) | LSTM / BiLSTM |
+|--|-------------------------|---------------|
+| After sequence layers | **30** vectors of size **`d_model`** | Typically **one** state vector (last step, `return_sequences=False`) |
+| Aggregation | **Mean** over 30 cycles | Implicit summary in **\(h_{29}\)** (and concat of directions in BiLSTM) |
+| Parameters at aggregation | **None** (pooling) | **None** at “which step to read” (fixed: last) |
+
+Fair comparison: all models still map one window → one RUL; only the **aggregation mechanism** differs.
+
+### 6.5 Fixed in search
+
+Hyperband tunes depth, **`d_model`**, heads, FFN width, dropout, optional dense, and learning rate. **`GlobalAveragePooling1D`**, the linear RUL output, and the **mean** aggregation are **fixed**—not part of the search space (`readme.md` §6, `transformer-model.md`).
+
+---
+
 ## Other sections
 
-Encoder block overview (residual + FFN), `GlobalAveragePooling1D`, and end-to-end data flow: TCC draft or future additions here. Implementation summary: `src/modifications/transformer-model.md` and `readme.md` §6.
+Encoder block overview (residual + FFN) as **§4** and end-to-end data-flow diagram: TCC draft or future additions here. Implementation summary: `src/modifications/transformer-model.md` and `readme.md` §6.
