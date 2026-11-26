@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import time
 from pathlib import Path
 from typing import Any, Literal
@@ -13,7 +14,7 @@ import keras_tuner
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from matplotlib.ticker import MaxNLocator
+from matplotlib.ticker import MaxNLocator, MultipleLocator
 from keras import ops
 from keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLROnPlateau
 from keras.layers import (
@@ -349,6 +350,60 @@ def _build_tuner_factory(
     return build_model
 
 
+def build_model_from_saved_params(
+    model_kind: ModelKind,
+    params: dict[str, Any],
+    input_shape: tuple[int, int],
+) -> Model | Sequential:
+    """Reconstrói o modelo a partir de ``*_best_params.json`` (formato resumido)."""
+    hp = keras_tuner.HyperParameters()
+
+    def _dense_hidden_count(saved: dict[str, Any]) -> int:
+        return sum(
+            1
+            for key, value in saved.items()
+            if key.startswith("dense_") and value != 1
+        )
+
+    if model_kind == "lstm":
+        n_lstm = 1 + max(int(key.split("_")[1]) for key in params if key.startswith("lstm_"))
+        n_dense_hidden = _dense_hidden_count(params)
+        hp.Fixed("layers_lstm", n_lstm)
+        hp.Fixed("layers_dense", n_dense_hidden)
+        for i in range(n_lstm):
+            hp.Fixed(f"lstm_{i}", params[f"lstm_{i}"])
+            hp.Fixed(f"dropout_{i}", params[f"dropout_{i}"])
+        for i in range(n_dense_hidden):
+            hp.Fixed(f"dense_{i}", params[f"dense_{i}"])
+        hp.Fixed("learning_rate", params["learning_rate"])
+        return build_model_lstm(hp, input_shape)
+
+    if model_kind == "bilstm":
+        n_bi = 1 + max(int(key.split("_")[1]) for key in params if key.startswith("bi_"))
+        n_dense_hidden = _dense_hidden_count(params)
+        hp.Fixed("layers_bi", n_bi)
+        hp.Fixed("layers_dense", n_dense_hidden)
+        for i in range(n_bi):
+            hp.Fixed(f"bi_{i}", params[f"bi_{i}"])
+            hp.Fixed(f"dropout_{i}", params[f"dropout_{i}"])
+        for i in range(n_dense_hidden):
+            hp.Fixed(f"dense_{i}", params[f"dense_{i}"])
+        hp.Fixed("learning_rate", params["learning_rate"])
+        return build_model_bilstm(hp, input_shape)
+
+    n_dense_hidden = _dense_hidden_count(params)
+    hp.Fixed("layers_encoder", int(params["layers_encoder"]))
+    hp.Fixed("d_model", params["d_model"])
+    hp.Fixed("num_heads", params["num_heads"])
+    hp.Fixed("ff_dim", params["ff_dim"])
+    hp.Fixed("dropout", params["dropout"])
+    hp.Fixed("layers_dense", n_dense_hidden)
+    for i in range(n_dense_hidden):
+        hp.Fixed(f"dense_{i}", params[f"dense_{i}"])
+    hp.Fixed("learning_rate", params["learning_rate"])
+    return build_model_transformer(hp, input_shape)
+
+
 def summarize_lstm_hyperparameters(param_values: dict[str, Any]) -> dict[str, Any]:
     """Organiza hiperparâmetros ótimos do LSTM como no notebook.
 
@@ -624,7 +679,9 @@ def show_figure(
     if save_path is not None:
         path = Path(save_path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(png)
+        tmp_path = path.with_name(f".{path.name}.tmp")
+        tmp_path.write_bytes(png)
+        os.replace(tmp_path, path)
     try:
         from IPython.display import publish_display_data
 
@@ -632,15 +689,6 @@ def show_figure(
     except Exception:
         return png
     return png
-
-
-def _moving_average(values: list[float], window: int = 3) -> np.ndarray:
-    """Média móvel centrada (comprimento ``len(values) - window + 1``)."""
-    arr = np.asarray(values, dtype=float)
-    if len(arr) < window:
-        return arr
-    kernel = np.ones(window, dtype=float) / window
-    return np.convolve(arr, kernel, mode="valid")
 
 
 def fit_model_for_history(
@@ -660,6 +708,7 @@ def fit_model_for_history(
     O ``model`` original (ex.: pesos do Hyperband) não é alterado.
     """
     checkpoint_path = Path(checkpoint_path)
+    weights_path = _weights_checkpoint_path(checkpoint_path)
     fresh = keras.models.clone_model(model)
     fresh.compile_from_config(model.get_compile_config())
     callbacks = create_training_callbacks(checkpoint_path, patience=patience)
@@ -672,7 +721,8 @@ def fit_model_for_history(
         callbacks=callbacks,
         verbose=0,
     )
-    fresh.load_weights(checkpoint_path)
+    if weights_path.is_file():
+        fresh.load_weights(weights_path)
     save_training_history(
         history,
         checkpoint_path.with_name(f"{checkpoint_path.stem}_history.json"),
@@ -714,19 +764,10 @@ def plot_training_history(
 
     ax1.plot(train_loss, label=f"Loss do treino ({model_label})")
     ax1.plot(val_loss, label=f"Loss da validação ({model_label})")
-    val_loss_ma = _moving_average(val_loss, window=3)
-    if len(val_loss_ma) >= 3:
-        ma_x = np.arange(2, 2 + len(val_loss_ma))
-        ax1.plot(
-            ma_x,
-            val_loss_ma,
-            ls="--",
-            alpha=0.7,
-            label="MA val (3 épocas, diagnóstico)",
-        )
     ax1.axvline(best_epoch, color="gray", ls=":", alpha=0.8, label="Melhor val_loss")
     ax1.set_xlabel("Epoch")
     ax1.set_ylabel("Loss (MAE)")
+    ax1.yaxis.set_major_locator(MultipleLocator(5))
     ax1.legend(loc="upper right")
     ax1.xaxis.set_major_locator(MaxNLocator(integer=True))
 
@@ -734,16 +775,6 @@ def plot_training_history(
     val_mse = _history_series(history, "val_mean_squared_error", "val_mse")
     ax2.plot(train_mse, label=f"MSE do treino ({model_label})")
     ax2.plot(val_mse, label=f"MSE da validação ({model_label})")
-    val_mse_ma = _moving_average(val_mse, window=3)
-    if len(val_mse_ma) >= 3:
-        ma_x = np.arange(2, 2 + len(val_mse_ma))
-        ax2.plot(
-            ma_x,
-            val_mse_ma,
-            ls="--",
-            alpha=0.7,
-            label="MA val (3 épocas, diagnóstico)",
-        )
     ax2.axvline(best_epoch, color="gray", ls=":", alpha=0.8, label="Melhor val_loss")
     ax2.set_xlabel("Epoch")
     ax2.set_ylabel("Erro Quadrático Médio (MSE)")
@@ -809,6 +840,9 @@ def plot_rul_prediction_diagnostics(
     plt.title(f"RUL real vs RUL previsto ({model_label})")
     plt.ylabel("RUL previsto")
     plt.xlabel("RUL real")
+    ax_scatter = scatter_fig.gca()
+    ax_scatter.xaxis.set_major_locator(MultipleLocator(10))
+    ax_scatter.yaxis.set_major_locator(MultipleLocator(10))
     scatter_fig.tight_layout()
     show_figure(scatter_fig, scatter_path)
 
