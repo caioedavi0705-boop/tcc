@@ -1,4 +1,4 @@
-# Comparative Analysis of Deep Learning Models (LSTM vs BiLSTM) for Turbofan Engine Remaining Useful Life (RUL) Estimation
+# Comparative Analysis of Deep Learning Models (LSTM vs BiLSTM vs Encoder-Only Transformer) for Turbofan Engine Remaining Useful Life (RUL) Estimation
 
 ## 1. Project Overview
 This repository contains an end-to-end Machine Learning pipeline developed in Python to estimate the **Remaining Useful Life (RUL)** of commercial aircraft turbofan engines using sensor time-series data. The core objective is to support **Predictive Maintenance (PdM)** by comparing deep learning architectures for temporal regression:
