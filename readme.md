@@ -1,9 +1,10 @@
 # Comparative Analysis of Deep Learning Models (LSTM vs BiLSTM) for Turbofan Engine Remaining Useful Life (RUL) Estimation
 
 ## 1. Project Overview
-This repository contains an end-to-end Machine Learning pipeline developed in Python to estimate the **Remaining Useful Life (RUL)** of commercial aircraft turbofan engines using sensor time-series data. The core objective is to support **Predictive Maintenance (PdM)** by comparing two recurrent deep learning architectures:
+This repository contains an end-to-end Machine Learning pipeline developed in Python to estimate the **Remaining Useful Life (RUL)** of commercial aircraft turbofan engines using sensor time-series data. The core objective is to support **Predictive Maintenance (PdM)** by comparing deep learning architectures for temporal regression:
 - **Long Short-Term Memory (LSTM)**
 - **Bidirectional Long Short-Term Memory (BiLSTM)**
+- **Encoder-only Transformer**
 
 The codebase is built using **TensorFlow/Keras**, **Scikit-Learn**, and **SciPy**.
 
@@ -30,6 +31,7 @@ tcc/
 │   ├── bilstm.ipynb      # BiLSTM search, repeated training, and plots
 │   ├── transformer.ipynb # Transformer search, repeated training, and plots
 │   └── comparacao_wilcoxon.ipynb  # Pairwise Wilcoxon comparison of the saved runs
+├── output/               # Human-readable experiment comparison summaries (comparison_1.md, …)
 ├── readme.md
 └── .gitignore
 ```
@@ -39,8 +41,9 @@ tcc/
 - **`data/`** — Local dataset storage (ignored by Git). `raw/` mirrors the NASA C-MAPSS FD001 split into training runs, test runs, and final RUL labels; `processed/` is reserved for cleaned or engineered outputs produced by the pipeline.
 - **`src/`** — Core pipeline code, split by responsibility: ingestion (`data.py`), feature engineering and windowing (`features.py`), and model search/training/metrics (`models.py`). The experiment is split into `lstm.ipynb`, `bilstm.ipynb`, `transformer.ipynb`, and `comparacao_wilcoxon.ipynb`. The model notebooks save iteration tables under `data/processed/results/` for the Wilcoxon notebook.
 - **`notebooks/`** — Space for additional exploratory analysis without mixing ad-hoc work into the reusable `src/` modules.
+- **`output/`** — Written comparison reports (`comparison_*.md`) documenting protocol changes, mean metrics, and Wilcoxon tests across LSTM, BiLSTM, and Transformer runs. Each file is self-contained; read the header before comparing numbers across versions.
 
-Typical flow: load from `data/raw/` via `src/data.py` → build windows with `src/features.py` → train LSTM, BiLSTM, and the Transformer from their notebooks with `src/models.py` → compare the saved tables in `comparacao_wilcoxon.ipynb`.
+Typical flow: load from `data/raw/` via `src/data.py` → build windows with `src/features.py` → train LSTM, BiLSTM, and the Transformer from their notebooks with `src/models.py` → compare the saved tables in `comparacao_wilcoxon.ipynb` → summarize results under `output/comparison_*.md`.
 
 ---
 
@@ -191,5 +194,20 @@ To evaluate statistical significance between paired model runs without assuming 
 4. Standardized $z$-score calculation:
    $$z = \frac{T - \frac{n(n+1)}{4}}{\sqrt{\frac{n(n+1)(2n+1)}{24}}}$$
 5. Significance Threshold: **$p\text{-value} < 0.05$** rejects the null hypothesis ($H_0$: median difference between models equals 0).
+
+Pairwise Wilcoxon tests for all three models are reported in the latest `output/comparison_*.md` files (LSTM vs BiLSTM, LSTM vs Transformer, BiLSTM vs Transformer).
+
+---
+
+## 9. Experiment Comparison Reports (`output/`)
+
+| Report | Summary |
+| --- | --- |
+| `comparison_1.md` | First three-model run after Hyperband search and the encoder-only Transformer. |
+| `comparison_2.md` | Smooth validation-curve protocol (engine-held-out split, updated callbacks). **Not comparable** to Comparison 1. |
+| `comparison_3.md` | Fresh Hyperband v2 winners on the smooth-validation protocol. **Not comparable** to Comparisons 1–2. |
+| **`comparison_4.md`** | **Same frozen hyperparameters as Comparison 3** (`*_best_params.json`); no new search—10× repeated train/valid/test with updated training-history and scatter figures (no MA overlay on validation; rescaled MAE/scatter ticks). **Not comparable** to Comparisons 1–2; Comparison 3 artifacts remain under `data/processed/comparison_3/`. |
+
+Use **`comparison_4.md`** for the current narrative on mean test MSE/RMSE/MAE/R², iteration runtimes, and Wilcoxon significance under the frozen-v3 protocol.
 
 ---
